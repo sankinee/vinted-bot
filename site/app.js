@@ -374,11 +374,11 @@ async function poll(f, src) {
     r.backoff = Math.min(Math.max(r.backoff * 2, limited ? 15000 : 3000), 180000);
     if (res.retryAfter) r.backoff = Math.max(r.backoff, res.retryAfter * 1000);
     r.err = limited ? `Limité par Vinted (${res.status}), pause ${Math.round(r.backoff / 1000)} s`
-      : res.status === 401 ? 'Non connecté à Vinted' : res.error === 'reload' ? 'Extension rechargée : recharge la page' : `Erreur ${res.status || res.error || ''}`;
+      : res.status === 401 ? 'Non connecté à Vinted' : res.error === 'reload' ? 'Extension rechargée : recharge la page' : `Erreur ${[res.status || '', res.error || ''].join(' ').trim()}`;
     r.nextAt = Date.now() + r.backoff;
     return;
   }
-  r.backoff = 0; r.err = '';
+  r.backoff = 0; r.err = ''; r.via = res.via || '';
   S.stats.lat.push(res.ms || ms); if (S.stats.lat.length > 30) S.stats.lat.shift();
 
   const items = res.items || [];
@@ -668,6 +668,7 @@ function renderMonitorStatus(f) {
   s.replaceChildren(el('span', '', f.domain.replace('vinted.', '').toUpperCase()), el('span', '', `${r.found} trouvés`),
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
+  if (r.via) s.append(el('span', '', r.via === 'page' ? 'via page' : 'via API'));
   if (r.err) s.append(el('span', 'err', r.err));
 }
 

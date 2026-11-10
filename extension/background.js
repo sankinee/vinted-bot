@@ -7,6 +7,158 @@
 const DOMAIN_RE = /^vinted\.(fr|be|es|it|de|nl|pl|pt|lu|at|co\.uk|cz|lt|sk|se|fi|dk|hu|ro|hr|gr|ie|com)$/;
 const refreshing = new Map();
 
+/* ------------------------------------------------------------------ Adresses Vinted
+   Vinted change régulièrement ses adresses internes. Ordre d'essai :
+   1) adresse apprise en observant le site Vinted (learn.js), 2) adresses connues,
+   3) lecture des annonces directement dans la page HTML de recherche. */
+const DOM_IN_HOST = /vinted\.[a-z.]+$/;
+let EP = { search: null, item: null };
+const dead = new Set();
+const epReady = chrome.storage.local.get('ep').then(({ ep }) => { if (ep) EP = { ...EP, ...ep }; syncLearner(); });
+
+const SEARCH_CANDIDATES = [
+  'https://www.{d}/api/v2/catalog/items',
+  'https://api.{d}/api/v2/catalog/items',
+  'https://api.{d}/catalog/v2/items',
+  'https://api.{d}/catalog/items',
+  'https://api.{d}/v2/catalog/items',
+];
+const ITEM_CANDIDATES = ['https://www.{d}/api/v2/items/{id}', 'https://api.{d}/api/v2/items/{id}', 'https://api.{d}/items/v2/{id}'];
+
+function toTemplate(url, kind) {
+  const u = new URL(url);
+  let path = u.pathname;
+  if (kind === 'item') path = path.replace(/\/\d{5,}(?=\/|$)/, '/{id}');
+  return `${u.protocol}//${u.host.replace(DOM_IN_HOST, '{d}')}${path}` + (kind === 'search' ? u.search : '');
+}
+
+async function learn(kind, url, senderUrl) {
+  try { if (!DOM_IN_HOST.test(new URL(senderUrl).hostname)) return; } catch { return; }
+  if (kind !== 'search' && kind !== 'item') return;
+  const tpl = toTemplate(url, kind);
+  if (kind === 'item' && !tpl.includes('{id}')) return;
+  if (EP[kind] === tpl) return;
+  EP[kind] = tpl;
+  await chrome.storage.local.set({ ep: EP });
+  syncLearner();
+}
+
+// learn.js n'est injecté dans Vinted que tant qu'il reste quelque chose à apprendre.
+async function syncLearner() {
+  try {
+    const need = !EP.search;
+    const reg = await chrome.scripting.getRegisteredContentScripts({ ids: ['flipdar-learn'] });
+    if (need && !reg.length) {
+      const m = chrome.runtime.getManifest();
+      await chrome.scripting.registerContentScripts([{ id: 'flipdar-learn', js: ['learn.js'], matches: m.host_permissions, runAt: 'document_start', world: 'MAIN', persistAcrossSessions: true }]);
+    } else if (!need && reg.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: ['flipdar-learn'] });
+    }
+  } catch (e) { /* navigateur sans world MAIN : on se contente des autres méthodes */ }
+}
+
+function searchUrl(tpl, domain, query) {
+  const base = tpl.replace(/\{d\}/g, domain);
+  const u = new URL(base);
+  const ours = new URLSearchParams(query);
+  const FILTER = /search_text|price|brand|size|catalog|status|color|material|page|order|time|session|search_id/;
+  const out = new URLSearchParams();
+  for (const [k, v] of u.searchParams) if (!ours.has(k) && !FILTER.test(k)) out.append(k, v);
+  for (const [k, v] of ours) out.append(k, v);
+  u.search = out.toString();
+  return u.href;
+}
+
+async function getJson(url, retry = true) {
+  const t0 = Date.now();
+  const r = await fetch(url, { credentials: 'include', headers: { accept: 'application/json, text/plain, */*' }, cache: 'no-store' });
+  if ((r.status === 401 || r.status === 403) && retry) {
+    await refreshSession(new URL(url).hostname.replace(/^(www|api)\./, ''));
+    return getJson(url, false);
+  }
+  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
+  if (!/json/.test(r.headers.get('content-type') || '')) return { ok: false, status: 415 };
+  return { ok: true, status: r.status, ms: Date.now() - t0, data: await r.json() };
+}
+
+// Extrait les annonces du JSON embarqué dans une page (Next.js : __NEXT_DATA__ ou flux RSC).
+function balancedFrom(s, start) {
+  let depth = 0, inStr = false, esc = false;
+  for (let j = start; j < s.length && j < start + 30000; j++) {
+    const c = s[j];
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return s.slice(start, j + 1);
+  }
+  return null;
+}
+function openBraceBefore(s, i) {
+  let depth = 0;
+  for (let j = i; j >= 0 && j > i - 30000; j--) {
+    const c = s[j];
+    if (c === '}') depth++;
+    else if (c === '{') { if (depth === 0) return j; depth--; }
+  }
+  return -1;
+}
+function pageCorpus(html) {
+  let corpus = '';
+  const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (nd) corpus += nd[1] + '\n';
+  for (const m of html.matchAll(/self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)/g)) { try { corpus += JSON.parse('"' + m[1] + '"'); } catch { /* fragment illisible */ } }
+  for (const m of html.matchAll(/<script[^>]*type="application\/(?:json|ld\+json)"[^>]*>([\s\S]*?)<\/script>/g)) corpus += m[1] + '\n';
+  return corpus;
+}
+function extractObjects(corpus, accept) {
+  const out = new Map(), seenStart = new Set();
+  for (const m of corpus.matchAll(/"title":"/g)) {
+    const st = openBraceBefore(corpus, m.index);
+    if (st < 0 || seenStart.has(st)) continue;
+    seenStart.add(st);
+    const txt = balancedFrom(corpus, st);
+    if (!txt) continue;
+    try { const o = JSON.parse(txt); if (accept(o) && !out.has(o.id)) out.set(o.id, o); } catch { /* objet incomplet */ }
+  }
+  return [...out.values()];
+}
+const looksLikeItem = (o) => o && typeof o.id === 'number' && o.id > 99999 && typeof o.title === 'string' && o.price != null;
+
+async function searchHtml(domain, query) {
+  const p = new URLSearchParams(query);
+  for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
+  p.delete('per_page');
+  const t0 = Date.now();
+  const r = await fetch(`https://www.${domain}/catalog?${p}`, { credentials: 'include', cache: 'no-store' });
+  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
+  const items = extractObjects(pageCorpus(await r.text()), looksLikeItem).sort((a, b) => b.id - a.id);
+  if (!items.length) return { ok: false, status: 0, error: 'aucune annonce lisible dans la page' };
+  return { ok: true, status: r.status, ms: Date.now() - t0, data: { items }, via: 'page' };
+}
+
+async function search(domain, query) {
+  await epReady;
+  const tries = [];
+  if (EP.search) tries.push(EP.search);
+  for (const c of SEARCH_CANDIDATES) if (!dead.has(c) && !tries.includes(c)) tries.push(c);
+  let last = null;
+  for (const tpl of tries) {
+    const res = await getJson(searchUrl(tpl, domain, query));
+    if (res.ok && Array.isArray(res.data && res.data.items)) {
+      if (EP.search !== tpl) { EP.search = tpl; chrome.storage.local.set({ ep: EP }); syncLearner(); }
+      return { ...res, via: 'api' };
+    }
+    if (res.status === 429) return res;           // limité : ne pas insister
+    if (res.status === 404 || res.status === 415 || res.ok) {
+      dead.add(tpl);
+      if (tpl === EP.search) { EP.search = null; chrome.storage.local.set({ ep: EP }); syncLearner(); }
+    }
+    last = res;
+  }
+  const html = await searchHtml(domain, query);
+  return html.ok ? html : { ...html, error: html.error || (last && `api ${last.status}`) };
+}
+
 /* ------------------------------------------------------------------ Config achat auto */
 const AB_DEFAULTS = { enabled: false, trusted: [], maxPerItem: 60, dailyBudget: 200, maxPerDay: 5, day: '', spent: 0, count: 0 };
 const today = () => new Date().toISOString().slice(0, 10);
@@ -25,21 +177,23 @@ function money(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? String(v.title || v.name || '') : '');
+
 function slim(i, domain) {
-  const ph = i.photo || {};
+  const ph = i.photo || (Array.isArray(i.photos) && i.photos[0]) || {};
   const thumb = (ph.thumbnails || []).find((t) => t.type === 'thumb310x430') || (ph.thumbnails || [])[0];
   const ts = ph.high_resolution && ph.high_resolution.timestamp;
   return {
     id: i.id,
-    title: i.title || '',
-    price: money(i.price),
+    title: txt(i.title),
+    price: money(i.price) ?? money(i.price_numeric),
     currency: (i.price && i.price.currency_code) || i.currency || 'EUR',
     total: money(i.total_item_price),
     fee: money(i.service_fee),
-    brand: i.brand_title || '',
-    size: i.size_title || '',
-    status: i.status || '',
-    url: i.url || `https://www.${domain}/items/${i.id}`,
+    brand: txt(i.brand_title) || txt(i.brand),
+    size: txt(i.size_title) || txt(i.size),
+    status: txt(i.status),
+    url: !i.url ? `https://www.${domain}/items/${i.id}` : i.url.startsWith('/') ? `https://www.${domain}${i.url}` : i.url,
     photo: (thumb && thumb.url) || ph.url || '',
     ts: ts ? ts * 1000 : null,
     user: (i.user && i.user.login) || '',
@@ -57,22 +211,6 @@ function refreshSession(domain) {
     refreshing.set(domain, p);
   }
   return refreshing.get(domain);
-}
-
-async function vget(domain, path, { retry = true, as = 'json' } = {}) {
-  const t0 = Date.now();
-  const r = await fetch(`https://www.${domain}${path}`, {
-    credentials: 'include',
-    headers: { accept: as === 'json' ? 'application/json, text/plain, */*' : 'text/html,*/*' },
-    cache: 'no-store',
-  });
-  if ((r.status === 401 || r.status === 403) && retry && as === 'json') {
-    await refreshSession(domain);
-    return vget(domain, path, { retry: false, as });
-  }
-  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
-  const data = as === 'json' ? await r.json() : await r.text();
-  return { ok: true, status: r.status, ms: Date.now() - t0, data };
 }
 
 /* ------------------------------------------------------------------ État d'une annonce
@@ -101,15 +239,30 @@ function statusFromHtml(html) {
 }
 
 async function itemStatus(domain, id) {
-  let res = await vget(domain, `/api/v2/items/${id}`);
-  if (res.ok && res.data && res.data.item) return { ok: true, ...statusFromJson(res.data.item) };
-  if (res.status === 404) return { ok: true, state: 'gone', price: null };
-  if (res.status === 429) return res;
-  // Repli : page HTML de l'annonce (comme on la verrait dans le navigateur).
-  res = await vget(domain, `/items/${id}`, { as: 'html' });
-  if (res.status === 404 || res.status === 410) return { ok: true, state: 'gone', price: null };
-  if (!res.ok) return res;
-  return { ok: true, ...statusFromHtml(res.data) };
+  await epReady;
+  const tries = [];
+  if (EP.item) tries.push(EP.item);
+  for (const c of ITEM_CANDIDATES) if (!dead.has(c) && !tries.includes(c)) tries.push(c);
+  for (const tpl of tries) {
+    const res = await getJson(tpl.replace(/\{d\}/g, domain).replace('{id}', id));
+    if (res.ok && res.data && res.data.item) {
+      if (EP.item !== tpl) { EP.item = tpl; chrome.storage.local.set({ ep: EP }); }
+      return { ok: true, via: 'api', ...statusFromJson(res.data.item) };
+    }
+    if (res.status === 429) return res;
+    // 404 ici = adresse d'API disparue OU article supprimé : impossible de savoir, on passe à la page.
+    if (res.status === 415 || (res.ok && !res.data.item)) dead.add(tpl);
+    if (res.status === 404 && tpl !== EP.item) dead.add(tpl);
+  }
+  // Page de l'article (comme dans le navigateur) : une annonce vendue y reste visible avec son prix.
+  const r = await fetch(`https://www.${domain}/items/${id}`, { credentials: 'include', cache: 'no-store' });
+  if (r.status === 404 || r.status === 410) return { ok: true, state: 'gone', price: null, via: 'page' };
+  if (!r.ok) return { ok: false, status: r.status };
+  if (!new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
+  const html = await r.text();
+  const objs = extractObjects(pageCorpus(html), (o) => o && o.id === id);
+  if (objs.length) return { ok: true, via: 'page', ...statusFromJson(objs[0]) };
+  return { ok: true, via: 'page', ...statusFromHtml(html) };
 }
 
 /* ------------------------------------------------------------------ Achat automatique */
@@ -181,7 +334,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'version') return { ok: true, version: chrome.runtime.getManifest().version };
+  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
     const trusted = c.trusted.includes(origin);
@@ -193,10 +346,9 @@ async function handle(msg, sender) {
 
   if (msg.type === 'warmup') { await refreshSession(domain); return { ok: true }; }
   if (msg.type === 'search') {
-    const q = new URLSearchParams(String(msg.query || '')).toString();
-    const res = await vget(domain, `/api/v2/catalog/items?${q}`);
+    const res = await search(domain, new URLSearchParams(String(msg.query || '')).toString());
     if (!res.ok) return res;
-    return { ok: true, status: res.status, ms: res.ms, items: (res.data.items || []).map((i) => slim(i, domain)) };
+    return { ok: true, status: res.status, ms: res.ms, via: res.via, items: (res.data.items || []).map((i) => slim(i, domain)) };
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
   if (msg.type === 'autobuy') return autobuy(msg, origin);
@@ -205,6 +357,7 @@ async function handle(msg, sender) {
 
 chrome.runtime.onMessage.addListener((msg, sender, send) => {
   if (msg && ['job?', 'jobPhase', 'jobResult'].includes(msg.type)) { onCheckoutMessage(msg, sender, send); return false; }
+  if (msg && msg.type === 'learn') { learn(msg.kind, msg.url, sender.url || ''); return false; }
   handle(msg, sender).then(send, (e) => send({ ok: false, status: 0, error: String((e && e.message) || e) }));
   return true;
 });
