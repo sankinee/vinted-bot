@@ -313,12 +313,33 @@ function tsOf(i, ph) {
   return best;
 }
 // « Ajouté il y a 17 minutes » (page article) -> horodatage approximatif.
+const AGE_UNITS = { s: 1e3, m: 6e4, h: 36e5, d: 864e5, w: 6048e5, mo: 2592e6, y: 31536e6 };
+const unitOf = (u) => {
+  u = u.toLowerCase();
+  if (/^(seconde|second|segundo|secondo|sekunde|seconde)/.test(u)) return 's';
+  if (/^(minute|minuto|minuut|minut|min)/.test(u)) return 'm';
+  if (/^(heure|hour|hora|ora|stunde|uur|godzin)/.test(u)) return 'h';
+  if (/^(jour|day|día|dia|giorn|tag|dag|dni|dzie)/.test(u)) return 'd';
+  if (/^(semaine|week|semana|settiman|woche|tydz)/.test(u)) return 'w';
+  if (/^(mois|month|mes|mese|monat|maand|miesi)/.test(u)) return 'mo';
+  if (/^(an|year|año|anno|jahr|jaar|rok|lat)/.test(u)) return 'y';
+  return null;
+};
 function tsFromText(html) {
-  const m = html.match(/(?:ajouté|added|subido|aggiunto|hinzugefügt|toegevoegd)[^<]{0,20}?(\d+)\s*(seconde|minute|heure|jour|semaine|mois|an|second|hour|day|week|month|year)/i);
-  if (!m) return null;
-  const n = Number(m[1]), unit = m[2].toLowerCase();
-  const ms = { seconde: 1e3, second: 1e3, minute: 6e4, heure: 36e5, hour: 36e5, jour: 864e5, day: 864e5, semaine: 6048e5, week: 6048e5, mois: 2592e6, month: 2592e6, an: 31536e6, year: 31536e6 }[unit] || 0;
-  return ms ? Date.now() - n * ms : null;
+  const t = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|\s+/g, ' ');
+  const at = t.search(/ajouté|added|subido|aggiunto|hinzugefügt|toegevoegd|dodane|uploaded/i);
+  const zone = at >= 0 ? t.slice(at, at + 80) : t;
+  const num = (x) => (/^\d+$/.test(x) ? Number(x) : 1); // « une heure », « an hour »…
+  const pats = [
+    /il y a\s+(\d+|une?|un)\s+([a-zé]+)/i, /(\d+|an?|one)\s+([a-z]+)\s+ago/i, /hace\s+(\d+|una?|un)\s+([a-zí]+)/i,
+    /(\d+|una?|un)\s+([a-z]+)\s+fa\b/i, /vor\s+(\d+|einer?|einem)\s+([a-zä]+)/i, /(\d+)\s+([a-z]+)\s+geleden/i, /(\d+)\s+([a-zó]+)\s+temu/i,
+  ];
+  for (const re of pats) {
+    const m = zone.match(re); if (!m) continue;
+    const u = unitOf(m[2]); if (!u) continue;
+    return Date.now() - num(m[1]) * AGE_UNITS[u];
+  }
+  return null;
 }
 
 const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? String(v.title || v.name || '') : '');
@@ -382,7 +403,7 @@ function statusFromHtml(html) {
   return { state: sold ? 'sold' : reserved ? 'reserved' : closed ? 'gone' : 'live', price: pm ? parseFloat(pm[1]) : null };
 }
 
-async function itemStatus(domain, id) {
+async function itemStatus(domain, id, wantTs = false) {
   await epReady;
   const tries = [];
   if (EP.item) tries.push(EP.item);
@@ -406,7 +427,12 @@ async function itemStatus(domain, id) {
   if (r.url && !new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
   const { corpus, rsc, html } = await readPage(r);
   const objs = extractObjects(corpus, (o) => o && Number(o.id) === id);
-  const ts = (objs[0] && tsOf(objs[0], objs[0].photo)) || (html ? tsFromText(html) : null);
+  let ts = (objs[0] && tsOf(objs[0], objs[0].photo)) || (html ? tsFromText(html) : null);
+  if (!ts && wantTs && rsc) {
+    // Le flux de données ne contient pas la date : on lit le texte « Ajouté il y a… » de la page complète.
+    const r2 = await vfetch(`https://www.${domain}/items/${id}`, { credentials: 'include', cache: 'no-store' });
+    if (r2.ok) ts = tsFromText(await r2.text());
+  }
   if (objs.length) return { ok: true, via: rsc ? 'rsc' : 'page', ts, ...statusFromJson(objs[0]) };
   return { ok: true, via: 'page', ts, ...statusFromHtml(html || corpus) };
 }
@@ -547,7 +573,7 @@ async function handle(msg, sender) {
       sample: (res.data.items || []).slice(0, 3).map((x) => { const { user, ...rest } = x; return trimForDebug(rest); }) };
     return { ok: true, status: res.status, ms: res.ms, via: res.via, items: (res.data.items || []).map((i) => slim(i, domain)) };
   }
-  if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
+  if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id), !!msg.wantTs);
   if (msg.type === 'autobuy') return autobuy(msg, origin, sender.tab && sender.tab.id);
   if (msg.type === 'requestTrust') {
     // Fenêtre de l'extension : l'utilisateur autorise lui-même ce site (un site ne peut pas s'autoriser seul).

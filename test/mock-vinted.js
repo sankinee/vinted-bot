@@ -10,7 +10,8 @@ const { URL } = require('url');
 const PORT = Number(process.env.MOCK_PORT || 443);
 const WITH_TS = process.env.MOCK_TS === '1';     // inclure photo.high_resolution.timestamp
 const INDEX_LAG = Number(process.env.MOCK_LAG || 20000); // délai d'indexation dans la recherche (ms)
-const RATE = 12 / 1000;                          // ids Vinted par ms (≈ 12 annonces / s sur toute la plateforme)
+const RATE = 12 / 1000;
+const ADDED_OFFSET = Number(process.env.MOCK_ADDED_OFFSET || 0); // « Ajouté il y a » plus ancien que le numéro (ms)                          // ids Vinted par ms (≈ 12 annonces / s sur toute la plateforme)
 
 const BRANDS = ['Ralph Lauren', 'Nike', 'Lacoste', 'Carhartt', 'Levi\'s', 'Zara'];
 const TYPES = { 'Ralph Lauren': ['Pull', 'Polo', 'Chemise', 'Sweat'], Nike: ['Baskets', 'Sweat', 'Veste'], Lacoste: ['Polo', 'Pull'], Carhartt: ['Veste', 'Pantalon'], 'Levi\'s': ['Jean'], Zara: ['Robe', 'Manteau'] };
@@ -80,7 +81,7 @@ function itemPage(it, host) {
   const sold = it.sold;
   const body = `<header><nav><a href="/help">Acheter</a></nav></header>
 <main><h1>${esc(it.title)}</h1><div class="details"><p>${it.price.toFixed(2).replace('.', ',')} €</p>
-<p>Ajouté il y a ${Math.max(1, Math.round((Date.now() - it.createdAt) / 60000))} minutes</p>
+<dl><dt>Ajouté</dt><dd>il y a ${Math.max(1, Math.round((Date.now() - it.createdAt + ADDED_OFFSET) / 60000))} minutes</dd></dl>
 ${sold ? '<div data-testid="item-status--sold">Vendu</div>' : `<button data-testid="buy-bundle-banner-shop-button">Créer un lot</button>
 <button id="buy" data-testid="item-buy-button">Acheter</button>
 <button data-testid="item-buyer-offer-button">Faire une offre</button>`}
@@ -117,7 +118,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     if (u.pathname === '/__mock/sell') { const it = items.get(Number(u.searchParams.get('id'))); if (it) it.sold = true; return send(res, 200, 'text/plain', it ? 'ok' : 'no'); }
     if (u.pathname === '/__mock/paid') { const it = items.get(Number(u.searchParams.get('id'))); if (it) { it.sold = true; it.soldPrice = it.price; it.paid = true; } return send(res, 200, 'text/plain', 'ok'); }
     if (u.pathname === '/__mock/state') return send(res, 200, 'application/json', JSON.stringify({ requests: STATE.requests.slice(-400), paid: [...items.values()].filter((i) => i.paid).map((i) => i.id), newest: Math.max(...items.keys()) }));
-    if (u.pathname === '/__mock/ages') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = +((Date.now() - it.createdAt) / 60000).toFixed(1); } return send(res, 200, 'application/json', JSON.stringify(out)); }
+    if (u.pathname === '/__mock/ages') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = +((Date.now() - it.createdAt + ADDED_OFFSET) / 60000).toFixed(1); } return send(res, 200, 'application/json', JSON.stringify(out)); }
     if (u.pathname === '/__mock/item') { const it = [...items.values()].find((i) => !i.sold && i.createdAt < Date.now() - 60000 && i.brand === (u.searchParams.get('brand') || 'Ralph Lauren')); return send(res, 200, 'application/json', JSON.stringify(it)); }
   }
   STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1' });

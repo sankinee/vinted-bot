@@ -55,9 +55,14 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   await p.check('#abForm input[name=dryRun]');
 
   console.log('5. Âges et estimations');
-  await p.waitForTimeout(45000);
+  await p.waitForFunction(() => Clock.ready(), null, { timeout: 420000, polling: 2000 }); // ~5 min la 1re fois
+  await p.waitForTimeout(3000);
   const ages = await p.$$eval('.card .age', (a) => a.map((x) => x.textContent));
-  assert(ages.filter((x) => /^~?\d/.test(x)).length >= ages.length * 0.8, `âges affichés (${ages.slice(0, 5).join(', ')})`);
+  assert(ages.filter((x) => /^(~?\d|vu \d)/.test(x)).length >= ages.length * 0.8, `âges affichés (${ages.slice(0, 5).join(', ')})`);
+  const cards = await p.$$eval('.card', (c) => c.map((x) => ({ id: x.dataset.id, pub: x.querySelector('.pub').textContent })));
+  const real = JSON.parse(await fetchInsecure('https://www.vinted.fr/__mock/ages?ids=' + cards.map((c) => c.id).join(',')));
+  const errMin = cards.filter((c) => /~?(\d+) min/.test(c.pub)).map((c) => Math.abs(Number(c.pub.match(/(\d+) min/)[1]) - real[c.id]));
+  assert(errMin.length >= 3 && Math.max(...errMin) <= 2, `« ajouté il y a » fidèle à Vinted (écart max ${Math.max(...errMin).toFixed(1)} min sur ${errMin.length} annonces)`);
   const ests = await p.$$eval('.card .est', (a) => a.map((x) => x.textContent));
   assert(ests.filter((x) => /Revente ~\d+/.test(x)).length >= ests.length * 0.8, `estimations présentes (${ests[0]})`);
 

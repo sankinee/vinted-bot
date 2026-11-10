@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '4.0' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '4.1' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -27,10 +27,10 @@ const store = {
 
 const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
-  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
+  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120,
 };
-const APP_VERSION = '4.0';
-const EXT_MIN = '4.0.0';
+const APP_VERSION = '4.1';
+const EXT_MIN = '4.1.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -50,6 +50,7 @@ const STOP = new Set('les des une pour avec sans dans sur par taille homme femme
 // Réglages : passage aux valeurs prudentes (anti-blocage) pour les anciennes installations.
 function loadSettings() {
   const s = { ...DEFAULTS, ...store.get('settings', {}) };
+  if (!s.age41) { if (!s.freshMin || s.freshMin <= 60) s.freshMin = 120; s.age41 = true; store.set('settings', s); }
   if (!s.est32) { s.requireSold = false; s.freshMin = s.freshMin || 10; s.est32 = true; store.set('settings', s); }
   if (!s.safe27) { s.interval = Math.max(s.interval, 6); s.minGap = Math.max(s.minGap, 1500); s.checksPerMin = Math.min(s.checksPerMin, 4); s.safe27 = true; store.set('settings', s); }
   return s;
@@ -96,7 +97,7 @@ const Bridge = {
 
 const Live = {
   search: (domain, query) => Bridge.call({ type: 'search', domain, query }),
-  itemStatus: (domain, id) => Bridge.call({ type: 'itemStatus', domain, id }),
+  itemStatus: (domain, id, wantTs) => Bridge.call({ type: 'itemStatus', domain, id, wantTs: !!wantTs }),
   autobuy: (p) => Bridge.call({ type: 'autobuy', ...p }, 70000),
 };
 
@@ -336,36 +337,47 @@ const Clock = {
   },
   addKnown(id, ts) {
     if (!id || !ts) return;
-    this.known.push({ id, ts });
+    this.known = this.known.filter((p) => p.id !== id);
+    this.known.push({ id, ts, at: Date.now() });
     if (this.known.length > 400) this.known.splice(0, this.known.length - 300);
     this._fit = undefined;
   },
-  regress(pts) { // pts = [[x=temps, y=numéro]]
-    const n = pts.length, mx = pts.reduce((s, p) => s + p[0], 0) / n, my = pts.reduce((s, p) => s + p[1], 0) / n;
-    let sxy = 0, sxx = 0; for (const [x, y] of pts) { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; }
-    return sxx > 0 ? { rate: sxy / sxx, t0: mx, id0: my } : null;
+  // Pente robuste (Theil-Sen) : médiane des pentes entre toutes les paires de relevés
+  // → un relevé faussé (page Vinted en retard) ne déforme plus l'horloge.
+  robust(pts, minDt) { // pts = [[temps, numéro]]
+    const slopes = [];
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const dt = pts[j][0] - pts[i][0]; if (Math.abs(dt) >= minDt) slopes.push((pts[j][1] - pts[i][1]) / dt);
+    }
+    if (slopes.length < 2) return null;
+    slopes.sort((x, y) => x - y);
+    const rate = slopes[Math.floor(slopes.length / 2)];
+    const b = pts.map(([t, id]) => id - rate * t).sort((x, y) => x - y)[Math.floor(pts.length / 2)];
+    return { rate, b };
   },
   fit() {
     if (this._fit !== undefined) return this._fit;
     let f = null;
-    const s = this.samples;
-    if (s.length >= 2 && s[s.length - 1].t - s[0].t >= 55000) f = this.regress(s.map((p) => [p.t, p.id]));
-    else if (this.known.length >= 8) {
-      const k = this.known, span = Math.max(...k.map((p) => p.ts)) - Math.min(...k.map((p) => p.ts));
-      if (span > 30 * 60000) f = this.regress(k.map((p) => [p.ts, p.id]));
-    }
+    const s = this.samples, now = Date.now();
+    const known = this.known.filter((p) => now - p.at < 3 * 3600000);
+    // 1) relevés de la dernière annonce Vinted sur au moins 4 minutes
+    if (s.length >= 3 && s[s.length - 1].t - s[0].t >= 240000) f = this.robust(s.map((p) => [p.t, p.id]), 30000);
+    // 2) sinon, dates lues sur les pages Vinted (« Ajouté il y a… »), sur au moins 30 minutes
+    if (!f && known.length >= 6 && Math.max(...known.map((p) => p.ts)) - Math.min(...known.map((p) => p.ts)) > 30 * 60000) f = this.robust(known.map((p) => [p.ts, p.id]), 5 * 60000);
     if (f && !(f.rate > 0.0003 && f.rate < 0.5)) f = null; // entre 0,3 et 500 annonces / s : sinon incohérent
-    if (f && s.length >= 2 && this.known.length >= 3) {
-      // Recalage : écart médian entre l'estimation et les vraies dates (délai d'indexation de Vinted).
-      const d = this.known.slice(-50).map((p) => p.ts - (f.t0 + (p.id - f.id0) / f.rate)).sort((x, y) => x - y);
+    if (f && known.length >= 2) {
+      // Recalage sur ce qu'affiche Vinted : écart médian entre l'horloge et les dates réelles.
+      const d = known.slice(-40).map((p) => p.ts - (p.id - f.b) / f.rate).sort((x, y) => x - y);
       f.offset = d[Math.floor(d.length / 2)];
+      const dev = d.map((x) => Math.abs(x - f.offset)).sort((x, y) => x - y)[Math.floor(d.length / 2)];
+      if (known.length >= 4 && dev > 15 * 60000) f = null; // l'horloge et Vinted ne concordent pas : on n'affiche rien plutôt que faux
     }
     this._fit = f;
     return f;
   },
   est(id) {
     const f = this.fit(); if (!f) return null;
-    return Math.min(Date.now(), f.t0 + (id - f.id0) / f.rate + (f.offset || 0));
+    return Math.min(Date.now(), (id - f.b) / f.rate + (f.offset || 0));
   },
   ready() { return !!this.fit(); },
 };
@@ -448,7 +460,7 @@ const Comps = {
 };
 // Recalcule les estimations des cartes concernées (et relance l'achat auto pour les annonces récentes).
 function refreshEstimates(key) {
-  const win = Math.max(1, Number(S.settings.freshMin) || 10) * 60000;
+  const win = Math.max(1, Number(S.settings.freshMin) || 120) * 60000;
   for (const rec of S.items.values()) {
     const f = S.filters.find((x) => x.id === rec.filterId);
     if (key && Comps.keyOf(rec.item, f) !== key) continue;
@@ -527,7 +539,7 @@ async function scheduler() {
     }
     // Relevé de l'horloge Vinted (dernière annonce publiée sur tout le site), dans les temps morts.
     if (gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
-      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 120000 : 30000); probeClock(src); continue;
+      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 90000 : 40000); probeClock(src); continue;
     }
     // Temps mort : vérifie une annonce suivie (vendue ?) si le prochain moniteur n'est pas imminent.
     const perMin = Number(S.settings.checksPerMin) || 0;
@@ -548,11 +560,29 @@ async function probeClock(src) {
   if (!res.ok || !res.items || !res.items.length) return;
   for (const i of res.items) if (i.ts) Clock.addKnown(i.id, i.ts);
   Clock.addSample(Math.max(...res.items.map((i) => i.id)));
+  // Recalage : lit « Ajouté il y a… » sur la page d'une annonce (souvent au début, puis toutes les ~10 min).
+  Clock.probes = (Clock.probes || 0) + 1;
+  if (src.itemStatus && (Clock.known.length < 4 ? Clock.probes % 2 === 1 : Clock.probes % 7 === 0)) {
+    const ids = res.items.map((i) => i.id).sort((x, y) => y - x);
+    const pick = ids[(Clock.probes % 3) * Math.floor(ids.length / 3)] || ids[0];
+    Clock.calib = (async () => {
+      await sleep(Math.max(0, S.lastReq + S.settings.minGap - Date.now()));
+      S.lastReq = Date.now();
+      const st = await src.itemStatus(f ? f.domain : 'vinted.fr', pick, true).catch(() => null);
+      S.stats.reqTimes.push(Date.now());
+      if (st && st.ok && st.ts) Clock.addKnown(pick, st.ts);
+    })();
+    await Clock.calib;
+  }
   // Les annonces déjà affichées sans date en reçoivent une dès que l'horloge est prête.
   for (const rec of S.items.values()) {
     if (!rec.item.ts || rec.item.tsEst) {
       const e = Clock.est(rec.item.id);
-      if (e) { rec.item.ts = e; rec.item.tsEst = true; const ag = rec.el.querySelector('.age'); ag.dataset.ts = e; ag.dataset.est = '1'; paintAge(ag); }
+      const ag = rec.el.querySelector('.age');
+      const pub = rec.el.querySelector('.pub');
+      if (e) { rec.item.ts = e; rec.item.tsEst = true; ag.dataset.ts = e; ag.dataset.est = '1'; if (pub) { pub.dataset.ts = e; pub.dataset.est = '1'; } }
+      else if (rec.item.tsEst) { rec.item.ts = null; ag.dataset.ts = ''; if (pub) pub.dataset.ts = ''; } // horloge peu fiable : on retire l'âge
+      paintAge(ag);
     }
   }
 }
@@ -611,7 +641,10 @@ async function poll(f, src) {
     // « Nouveau » seulement si publié récemment : une annonce indexée en retard par Vinted
     // s'affiche (grisée) mais ne déclenche ni alerte ni achat auto.
     const fresh = items.filter((i) => i.id > r.maxId).sort((a, b) => a.id - b.id);
-    const win = Math.max(1, Number(S.settings.freshMin) || 10) * 60000;
+    // Nouvelle = vient d'apparaître dans la recherche (numéro plus grand que tout ce qu'on a vu).
+    // Vinted peut indexer une annonce avec du retard : on ne l'écarte que si elle est vraiment
+    // ancienne (remise en ligne…), au-delà du réglage « freshMin » (2 h par défaut).
+    const win = Math.max(1, Number(S.settings.freshMin) || 120) * 60000;
     if (fresh.length) { r.maxId = fresh[fresh.length - 1].id; fresh.forEach((i) => addItem(i, f, !i.ts || Date.now() - i.ts < win)); }
   }
   // Retard de Vinted : âge de l'annonce la plus récente renvoyée.
@@ -635,7 +668,7 @@ function abCheck(rec, f) {
   if (!a || a.conf === 'faible') return null; // jamais d'achat auto sur une estimation peu fiable
   if (r.minProfit != null && r.minProfit !== '' && (!a || a.profit < Number(r.minProfit))) return null;
   if (r.minDeal && (!a || a.deal < Number(r.minDeal))) return null;
-  if (item.ts && Date.now() - item.ts > Math.max(1, Number(S.settings.freshMin) || 10) * 60000) return null; // annonce trop ancienne
+  if (item.ts && Date.now() - item.ts > Math.max(1, Number(S.settings.freshMin) || 120) * 60000) return null; // annonce trop ancienne (remise en ligne…)
   return true;
 }
 
@@ -798,6 +831,11 @@ function addItem(item, f, isNew) {
   c.querySelector('.total').textContent = `${eur(buyerTotal(item))} TTC`;
   const t = c.querySelector('.title'); t.textContent = item.title; t.title = item.title;
   c.querySelector('.meta').textContent = [item.brand, item.size, item.status].filter(Boolean).join(' · ');
+  // Badge : pour une nouvelle annonce, depuis quand elle est apparue dans la recherche ;
+  // la date de publication Vinted (« ajouté il y a… ») est affichée à part.
+  if (isNew) { const ag = c.querySelector('.age'); ag.dataset.seen = String(rec.seenAt); }
+  const pub = el('div', 'pub'); pub.dataset.ts = item.ts || ''; if (item.tsEst) pub.dataset.est = '1';
+  c.querySelector('.meta').after(pub);
   if (S.monView && S.monView !== f.id) c.classList.add('hidden');
   paintEst(rec);
   S.items.set(item.id, rec);
@@ -808,6 +846,8 @@ function addItem(item, f, isNew) {
 
   if (isNew) {
     S.stats.found++; rt(f).found++;
+    // Délai entre la publication et l'apparition dans la recherche (mesure du retard de Vinted).
+    if (item.ts) { const r = rt(f); (r.delays ||= []).push(rec.seenAt - item.ts); if (r.delays.length > 30) r.delays.shift(); }
     if (abCheck(rec, f)) { rec.abTried = true; abEnqueue(rec, f); }
     alertNew(rec, f);
   }
@@ -826,11 +866,19 @@ function paintEst(rec) {
   if (a.deal >= S.settings.highlight && a.profit > 0 && a.conf !== 'faible') { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
 }
 
+const fmtAge = (ms) => { const s = Math.max(0, ms / 1000); return s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`; };
 function paintAge(e) {
-  if (!e.dataset.ts) { e.textContent = 'date…'; e.title = 'Âge en cours de calcul (horloge Vinted en calibrage, ~2 min)'; return; }
-  const s = Math.max(0, (Date.now() - Number(e.dataset.ts)) / 1000);
-  e.title = e.dataset.est ? 'Âge estimé d’après le numéro de l’annonce' : 'Date de publication';
-  e.textContent = (e.dataset.est ? '~' : '') + (s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`);
+  const now = Date.now();
+  if (e.dataset.seen) { // nouvelle annonce : temps écoulé depuis son apparition dans la recherche
+    e.textContent = `vu ${fmtAge(now - Number(e.dataset.seen))}`;
+    e.title = 'Apparue dans la recherche Vinted il y a ' + fmtAge(now - Number(e.dataset.seen));
+  } else if (!e.dataset.ts) { e.textContent = 'date…'; e.title = 'Âge en cours de calcul (horloge Vinted en calibrage, ~5 min la 1re fois)'; }
+  else {
+    e.title = e.dataset.est ? 'Âge estimé (horloge Vinted)' : 'Date de publication';
+    e.textContent = (e.dataset.est ? '~' : '') + fmtAge(now - Number(e.dataset.ts));
+  }
+  const pub = e.closest('.card') && e.closest('.card').querySelector('.pub');
+  if (pub) pub.textContent = pub.dataset.ts ? `ajouté il y a ${pub.dataset.est ? '~' : ''}${fmtAge(now - Number(pub.dataset.ts))}` : '';
 }
 
 const extAtLeast = (v) => !!S.extVersion && S.extVersion.localeCompare(v, undefined, { numeric: true }) >= 0;
@@ -1007,7 +1055,10 @@ function renderMonitorStatus(f) {
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
   if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API' }[r.via] || r.via));
-  if (r.lag > 3 * 60000 && !r.err) s.append(el('span', 'err', `dernière annonce : il y a ${Math.round(r.lag / 60000)} min`));
+  if (r.delays && r.delays.length >= 3) {
+    const d = [...r.delays].sort((x, y) => x - y)[Math.floor(r.delays.length / 2)];
+    s.append(el('span', d > 5 * 60000 ? 'err' : '', `Vinted affiche les annonces ~${fmtAge(d)} après publication`));
+  } else if (r.lag > 3 * 60000 && !r.err) s.append(el('span', 'err', `dernière annonce : il y a ${Math.round(r.lag / 60000)} min`));
   if (r.err) s.append(el('span', 'err', r.err));
 }
 
