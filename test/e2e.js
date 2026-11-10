@@ -66,6 +66,11 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   const ests = await p.$$eval('.card .est', (a) => a.map((x) => x.textContent));
   assert(ests.filter((x) => /Revente ~\d+/.test(x)).length >= ests.length * 0.8, `estimations présentes (${ests[0]})`);
 
+  {
+    const st = await mockState(), now = Date.now();
+    const perMin = []; for (let m = 1; m <= 5; m++) perMin.push(st.requests.filter((r) => r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && !r.path.startsWith('/__img') && !/^\/(items|checkout)/.test(r.path) || (r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && r.rsc && r.path.startsWith('/items'))).length);
+    assert(Math.max(...perMin) <= 16, `requêtes Vinted par minute (5 dernières min) : ${perMin.join(', ')} (plafond 15)`);
+  }
   console.log('6. Blocage Vinted (rate limited)');
   await fetchInsecure('https://www.vinted.fr/__mock/ratelimit?on=1');
   await p.waitForFunction(() => /Pause Vinted/.test(document.querySelector('#srcLabel').textContent), null, { timeout: 40000 });

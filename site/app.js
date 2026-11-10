@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '4.1' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '4.2' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -26,11 +26,11 @@ const store = {
 };
 
 const DEFAULTS = {
-  interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
+  interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120,
 };
-const APP_VERSION = '4.1';
-const EXT_MIN = '4.1.0';
+const APP_VERSION = '4.2';
+const EXT_MIN = '4.2.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -50,6 +50,7 @@ const STOP = new Set('les des une pour avec sans dans sur par taille homme femme
 // Réglages : passage aux valeurs prudentes (anti-blocage) pour les anciennes installations.
 function loadSettings() {
   const s = { ...DEFAULTS, ...store.get('settings', {}) };
+  if (!s.rl42) { s.interval = Math.max(Number(s.interval) || 6, 6); s.minGap = Math.max(Number(s.minGap) || 2500, 2500); s.checksPerMin = Math.min(Number(s.checksPerMin) || 2, 2); s.rl42 = true; store.set('settings', s); }
   if (!s.age41) { if (!s.freshMin || s.freshMin <= 60) s.freshMin = 120; s.age41 = true; store.set('settings', s); }
   if (!s.est32) { s.requireSold = false; s.freshMin = s.freshMin || 10; s.est32 = true; store.set('settings', s); }
   if (!s.safe27) { s.interval = Math.max(s.interval, 6); s.minGap = Math.max(s.minGap, 1500); s.checksPerMin = Math.min(s.checksPerMin, 4); s.safe27 = true; store.set('settings', s); }
@@ -533,17 +534,21 @@ async function scheduler() {
     const monWait = next ? rt(next).nextAt - now : Infinity;
 
     if (gapLeft <= 0 && monWait <= 0) { S.lastReq = now; poll(next, src); continue; }
-    // Recherche de comparables pour les estimations, dans les temps morts (1 / 15 s au plus).
-    if (gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
-      S.lastReq = now; Comps.next = now + 15000; Comps.run(src); continue;
+    // Tâches de fond (comparables, horloge, suivi des ventes) : seulement avec les requêtes qui restent
+    // une fois les recherches servies, et pas dans les 5 min qui suivent une pause imposée par Vinted.
+    const recent = S.stats.reqTimes.filter((t) => now - t < 60000).length;
+    const extras = S.settings.demo || (recent < (S.extCap || 15) - 3 && now > (S.calmUntil || 0));
+    // Recherche de comparables pour les estimations (1 / min au plus).
+    if (extras && gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
+      S.lastReq = now; Comps.next = now + (S.settings.demo ? 15000 : 60000); Comps.run(src); continue;
     }
     // Relevé de l'horloge Vinted (dernière annonce publiée sur tout le site), dans les temps morts.
-    if (gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
-      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 90000 : 40000); probeClock(src); continue;
+    if (extras && gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
+      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 180000 : 40000); probeClock(src); continue;
     }
     // Temps mort : vérifie une annonce suivie (vendue ?) si le prochain moniteur n'est pas imminent.
     const perMin = Number(S.settings.checksPerMin) || 0;
-    if (gapLeft <= 0 && perMin > 0 && monWait > S.settings.minGap && now - S.lastCheck >= 60000 / perMin) {
+    if (extras && gapLeft <= 0 && perMin > 0 && monWait > S.settings.minGap && now - S.lastCheck >= 60000 / perMin) {
       const x = DB.nextDue(now);
       if (x) { S.lastReq = S.lastCheck = now; checkItem(x, src); continue; }
       S.lastCheck = now - 60000 / perMin + 2000; // rien à vérifier : réessaie dans 2 s
@@ -562,7 +567,7 @@ async function probeClock(src) {
   Clock.addSample(Math.max(...res.items.map((i) => i.id)));
   // Recalage : lit « Ajouté il y a… » sur la page d'une annonce (souvent au début, puis toutes les ~10 min).
   Clock.probes = (Clock.probes || 0) + 1;
-  if (src.itemStatus && (Clock.known.length < 4 ? Clock.probes % 2 === 1 : Clock.probes % 7 === 0)) {
+  if (src.itemStatus && (Clock.known.length < 4 ? Clock.probes % 2 === 1 : Clock.probes % 10 === 0)) {
     const ids = res.items.map((i) => i.id).sort((x, y) => y - x);
     const pick = ids[(Clock.probes % 3) * Math.floor(ids.length / 3)] || ids[0];
     Clock.calib = (async () => {
@@ -774,7 +779,7 @@ async function refreshExt() {
   else if (S.bridge) { const r = await Bridge.call({ type: 'abConfig' }, 3000); S.ext = r && r.ok ? r : null; }
   if (S.bridge) {
     const v = await Bridge.call({ type: 'version' }, 3000);
-    if (v && v.ok) { S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); S.captcha = !!v.captcha; }
+    if (v && v.ok) { if (S.cooldown && !v.cooldown) S.calmUntil = Date.now() + 5 * 60000; S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); S.captcha = !!v.captcha; S.extCap = v.cap || 15; }
   }
   if (S.bridge && !S.extVersion) {
     const v = await Bridge.call({ type: 'version' }, 3000);

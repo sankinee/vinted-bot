@@ -18,18 +18,25 @@ function trimForDebug(v, depth = 0) {
    TOUTES les requêtes vers Vinted passent ici, quel que soit le nombre d'onglets Flipdar :
    écart minimum, plafond par minute, et pause générale (10 min, puis 20, 40, 60) dès que
    Vinted répond « rate limited ». */
-const RL = { last: 0, times: [], until: 0, strikes: 0, lastTrip: 0 };
-const MIN_SPACING = 1000;   // ms entre deux requêtes
-const MAX_PER_MIN = 30;     // requêtes / minute, tout compris
+const RL = { last: 0, times: [], until: 0, strikes: 0, lastTrip: 0, cap: 15 };
+const MIN_SPACING = 2000;   // ms entre deux requêtes
+const CAP_MAX = 15, CAP_MIN = 6; // requêtes / minute, tout compris (le plafond baisse après un blocage)
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
-chrome.storage.local.get('rl').then(({ rl }) => { if (rl && rl.until > Date.now()) Object.assign(RL, rl); });
+chrome.storage.local.get('rl').then(({ rl }) => {
+  if (!rl) return;
+  if (rl.until > Date.now()) RL.until = rl.until;
+  Object.assign(RL, { strikes: rl.strikes || 0, lastTrip: rl.lastTrip || 0, cap: rl.cap || CAP_MAX });
+});
+// Plafond adaptatif : +1 requête/min toutes les 20 min sans blocage, jusqu'à CAP_MAX.
+const capNow = () => Math.min(CAP_MAX, RL.cap + Math.floor(Math.max(0, Date.now() - Math.max(RL.lastTrip, RL.until)) / (20 * 60000)));
 
 function tripRateLimit() {
   const now = Date.now();
   if (now - RL.lastTrip > 2 * 3600000) RL.strikes = 0;
   RL.strikes++; RL.lastTrip = now;
   RL.until = Math.max(RL.until, now + Math.min(10 * 60000 * 2 ** (RL.strikes - 1), 60 * 60000));
-  chrome.storage.local.set({ rl: { until: RL.until, strikes: RL.strikes, lastTrip: RL.lastTrip } });
+  RL.cap = Math.max(CAP_MIN, Math.floor(capNow() * 0.6)); // Vinted tolère moins : on baisse le plafond
+  chrome.storage.local.set({ rl: { until: RL.until, strikes: RL.strikes, lastTrip: RL.lastTrip, cap: RL.cap } });
 }
 const cooldownLeft = () => Math.max(0, RL.until - Date.now());
 const limitedResponse = (url) => ({ ok: false, status: 429, url, headers: { get: (h) => (/retry-after/i.test(h) ? String(Math.ceil(cooldownLeft() / 1000)) : '') }, text: async () => '', json: async () => ({}) });
@@ -39,7 +46,7 @@ async function gate() {
     const now = Date.now();
     if (RL.until > now) return false;
     RL.times = RL.times.filter((t) => now - t < 60000);
-    const wait = Math.max(RL.last + MIN_SPACING - now, RL.times.length >= MAX_PER_MIN ? RL.times[0] + 60000 - now : 0);
+    const wait = Math.max(RL.last + MIN_SPACING - now, RL.times.length >= capNow() ? RL.times[0] + 60000 - now : 0);
     if (wait <= 0) { RL.last = now; RL.times.push(now); return true; }
     await sleepMs(Math.min(wait, 1000));
   }
@@ -552,8 +559,8 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], rl: { until: RL.until, strikes: RL.strikes, perMin: RL.times.length }, rscOff, lastRaw };
-  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, rscOff, lastRaw };
+  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), cap: capNow(), perMin: RL.times.filter((t) => Date.now() - t < 60000).length, captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
     const trusted = c.trusted.includes(origin);
