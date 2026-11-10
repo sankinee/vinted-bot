@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flipdar Bridge",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Pont Flipdar ⇄ Vinted : recherche, suivi des ventes et achat automatique (avec limites).",
   "permissions": [
     "storage",

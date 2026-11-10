@@ -7,6 +7,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const rand = (a, b) => a + Math.random() * (b - a);
   const text = () => (document.body ? document.body.innerText : '');
+  const anyText = () => text() + ' ' + ((document.querySelector('main') || {}).textContent || '');
   const ITEM_PAGE = /\/items\/\d+/;
 
   const BUY_RE = /^(acheter|acheter maintenant|buy now|buy|comprar|compra|compra ora|kaufen|jetzt kaufen|kopen|nu kopen|kup teraz|kup|cumpără|koupit|kúpiť|ostaa|köp|køb|vásárlás|kupi|αγορά)$/i;
@@ -28,8 +29,16 @@
   const buyCandidates = () => [...document.querySelectorAll('button, [role="button"], a[href*="transaction"], a[href*="checkout"]')].filter((b) => !inChrome(b)
     && (BUY_RE.test(labelOf(b)) || (/(^|[-_])buy[-_]?button$|item[-_]buy/i.test(b.getAttribute('data-testid') || '') && !/buyer/i.test(b.getAttribute('data-testid') || ''))));
   // Bouton « Acheter » visible ; s'il est encore grisé (page pas finie de charger), on attend qu'il s'active.
-  const findBuy = () => buyCandidates().find(usable);
-  const buyDisabledOnly = () => buyCandidates().some((b) => shown(b) && !enabled(b));
+  // Dans une fenêtre cachée, Vinted peut masquer ses boutons (mise en page) : un clic programmé
+  // fonctionne quand même. On préfère un bouton visible, sinon le vrai bouton (#item-buy-button) actif.
+  const realBtn = (b) => b.tagName === 'BUTTON' || b.getAttribute('role') === 'button';
+  const findBuy = () => {
+    const c = buyCandidates();
+    return c.find(usable)
+      || c.find((b) => enabled(b) && /^item[-_]buy[-_]button$/i.test(b.getAttribute('data-testid') || ''))
+      || c.find((b) => enabled(b) && realBtn(b) && BUY_RE.test(labelOf(b)));
+  };
+  const buyDisabledOnly = () => { const c = buyCandidates(); return c.length > 0 && c.every((b) => !enabled(b)); };
   // Diagnostic envoyé à Flipdar si le bouton reste introuvable.
   function buyDiag() {
     const els = [...document.querySelectorAll('button, [role="button"], a')].filter((b) => /achet|buy|kauf|compr|koop|kup/i.test(labelOf(b) + ' ' + (b.getAttribute('data-testid') || '')));
@@ -38,10 +47,10 @@
   }
   function findPay() {
     const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((b) => !inChrome(b));
-    return btns.find((b) => usable(b) && PAY_RE.test(labelOf(b)))
-      || btns.find((b) => usable(b) && /pay|purchase|checkout.*(submit|confirm)/i.test(b.getAttribute('data-testid') || ''));
+    const isPay = (b) => PAY_RE.test(labelOf(b)) || /pay|purchase|checkout.*(submit|confirm)/i.test(b.getAttribute('data-testid') || '');
+    return btns.find((b) => usable(b) && isPay(b)) || btns.find((b) => enabled(b) && isPay(b)); // visible d'abord, sinon masqué mais actif
   }
-  const payPresentButDisabled = () => [...document.querySelectorAll('button, [role="button"]')].some((b) => !inChrome(b) && b.offsetParent !== null && PAY_RE.test(labelOf(b)) && !usable(b));
+  const payPresentButDisabled = () => [...document.querySelectorAll('button, [role="button"]')].some((b) => !inChrome(b) && PAY_RE.test(labelOf(b)) && !enabled(b));
   // Attentes basées sur l'horloge (les onglets cachés ralentissent les minuteurs).
   const waitFor = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(120); } return fn() || null; };
 
@@ -58,9 +67,9 @@
     const labels = [...document.querySelectorAll('span, div, p, h2, h3, h4, dt, td')].filter((e) => /^(total|total à payer|montant total|total to pay|importe total|totale|gesamt|summe)\s*:?$/i.test(e.textContent.trim()));
     for (const l of labels) {
       let row = l.parentElement;
-      for (let i = 0; i < 3 && row; i++, row = row.parentElement) { const a = amounts(row.innerText || ''); if (a.length) return Math.max(...a); }
+      for (let i = 0; i < 3 && row; i++, row = row.parentElement) { const a = amounts(row.innerText || row.textContent || ''); if (a.length) return Math.max(...a); }
     }
-    const all = amounts(text());
+    const all = amounts(text() || ((document.querySelector('main') || document.body).textContent || ''));
     return all.length ? Math.max(...all) : null;
   }
 
@@ -68,8 +77,9 @@
   async function chooseDelivery() {
     const radios = [...document.querySelectorAll('input[type="radio"]')].filter((r) => !inChrome(r));
     if (radios.some((r) => r.checked)) return false;
-    const opts = [...document.querySelectorAll('label, [role="radio"], [data-testid*="shipping" i], [data-testid*="delivery" i]')].filter((e) => e.offsetParent !== null && !inChrome(e));
-    const pick = opts.find((e) => HOME_DELIVERY_RE.test(e.innerText || '')) || opts.find((e) => e.matches('[role="radio"], label') && /livraison|delivery|envío|consegna|lieferung|point relais|pickup/i.test(e.innerText || ''));
+    const opts = [...document.querySelectorAll('label, [role="radio"], [data-testid*="shipping" i], [data-testid*="delivery" i]')].filter((e) => e.isConnected && !inChrome(e));
+    const t = (e) => e.innerText || e.textContent || '';
+    const pick = opts.find((e) => HOME_DELIVERY_RE.test(t(e))) || opts.find((e) => e.matches('[role="radio"], label') && /livraison|delivery|envío|consegna|lieferung|point relais|pickup/i.test(t(e)));
     if (!pick) return false;
     pick.click();
     await sleep(rand(500, 900));
@@ -99,7 +109,7 @@
     let announced3ds = false;
     const end = Date.now() + 300000; // jusqu'à 5 min pour laisser le temps de valider le 3-D Secure
     while (Date.now() < end) {
-      if (SUCCESS_URL.test(location.pathname + location.search) || SUCCESS_RE.test(text())) return report(job.dryRun ? 'dry' : 'bought', { total });
+      if (SUCCESS_URL.test(location.pathname + location.search) || SUCCESS_RE.test(anyText())) return report(job.dryRun ? 'dry' : 'bought', { total });
       if (UNAVAILABLE_RE.test(text()) && !announced3ds) return report('unavailable', { reason: 'Article vendu juste avant toi' });
       if (!announced3ds && document.querySelector(THREEDS_SEL)) { announced3ds = true; await step('3ds', 'Valide le paiement sur ton appli bancaire', { phase: 'clicked' }); }
       await sleep(500);

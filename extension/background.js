@@ -392,8 +392,11 @@ async function autobuy(msg, origin, siteTab) {
   let winId = null;
   try {
     // Fenêtre séparée et réduite : rien ne s'affiche à l'écran pendant l'achat.
-    const win = await chrome.windows.create({ url, state: 'minimized', focused: false });
+    // Taille normale à la création (sinon Vinted passe en mise en page mobile et masque ses boutons),
+    // puis réduction immédiate.
+    const win = await chrome.windows.create({ url, state: 'normal', focused: false, width: 1280, height: 900, left: 0, top: 0 });
     winId = win.id; tab = win.tabs[0];
+    chrome.windows.update(winId, { state: 'minimized' }).catch(() => {});
   } catch {
     try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
   }
