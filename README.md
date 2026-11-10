@@ -2,11 +2,11 @@
 
 Interface web (hébergée gratuitement sur GitHub Pages) pour l'achat-revente sur Vinted :
 
-- **Moniteurs en temps réel** : colle un lien de recherche Vinted (avec tous tes filtres) ou des mots-clés. Les nouvelles annonces apparaissent en quelques secondes.
-- **⚡ Achat en un clic** : le bouton ouvre directement la page de paiement Vinted de l'article. Raccourci `B` = acheter le dernier article affiché.
-- **Achat automatique** : règles par moniteur (prix max, profit min, remise min). L'extension ouvre le vrai tunnel de paiement Vinted, revérifie le total, puis clique « Payer ». Mode **simulation** activé par défaut.
-- **Estimation sur prix VENDUS** : chaque annonce vue est suivie, puis sa page est revérifiée (30 min, 2 h, 6 h… jusqu'à 14 j). Quand elle passe « vendue », Flipdar enregistre le prix final et le délai de vente. L'estimation utilise ces ventes réelles (même marque + mots du titre, ajustées à l'état) et repasse sur les prix demandés tant qu'il n'y en a pas assez.
-- Son, notifications bureau, webhook Discord pour les bonnes affaires, multi-pays (FR, BE, ES, IT, DE…).
+- **Moniteurs en temps réel** : colle un lien de recherche Vinted (avec tous tes filtres) ou des mots-clés. Les annonces sont lues directement dans la page de recherche Vinted (Vinted n'a plus d'API publique pour la recherche) ; une adresse d'API n'est utilisée que si elle a été vérifiée (résultats conformes à la recherche, triés du plus récent).
+- **Âge réel des annonces** : quand Vinted ne donne pas la date, Flipdar la calcule avec son « horloge Vinted » (les numéros d'annonce augmentent avec le temps ; Flipdar mesure leur vitesse). Une annonce n'est « nouvelle » (alerte, achat auto) que si elle a moins de 10 min (réglable). L'âge estimé s'affiche avec un « ~ ».
+- **Estimation de revente** : comparaison avec les articles de **même marque et même type** (pull, veste, jean… reconnus en plusieurs langues), ajustée à l'état. Priorité aux **ventes réelles** relevées par Flipdar, sinon aux annonces similaires (prix sous lequel se trouvent 40 % d'entre elles, pour vendre vite). S'il manque des comparables, Flipdar lance tout seul une recherche ciblée (« Ralph Lauren pull »). Un point de couleur indique la confiance (vert / orange / rouge) ; pas de badge « bonne affaire » ni d'achat auto sur une estimation peu fiable.
+- **⚡ Achat** : une petite fenêtre Vinted s'ouvre dans le coin de l'écran, le bot clique « Acheter », vérifie le total, puis clique « Payer » (ou s'arrête avant en **simulation**, activée par défaut). Tu suis tout dans la fenêtre de progression de Flipdar. Le moyen de paiement est celui enregistré sur ton compte Vinted : c'est toi qui le choisis sur Vinted.
+- Son, notifications bureau, webhook Discord pour les bonnes affaires, multi-pays (FR, BE, ES, IT, DE…), bouton **Exporter un diagnostic**.
 
 ## Comment ça marche
 
@@ -54,6 +54,18 @@ Pense à l'**exporter** de temps en temps (bouton dans le panneau), et à l'impo
 
 ### Ce qui limite le risque de ban
 Requêtes depuis ton navigateur et ton IP, avec ta vraie session (aucun serveur ni proxy suspect). Rythme irrégulier (±20 %), pause automatique dès que Vinted renvoie 429/403. Achat via le vrai tunnel de paiement avec un délai humain, un seul à la fois, plafonné par jour. **Aucune garantie** cependant : Vinted peut bannir n'importe quel compte automatisé.
+
+## Tests
+
+Le dossier `test/` contient un faux Vinted (HTTPS) et un test de bout en bout qui charge la vraie extension dans Chromium :
+recherche, simulation, achat, article vendu, âges, estimations et blocage « rate limited ».
+
+```
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/mock-vinted.key -out /tmp/mock-vinted.crt -days 30 -subj "/CN=www.vinted.fr" -addext "subjectAltName=DNS:www.vinted.fr,DNS:api.vinted.fr"
+sudo node test/mock-vinted.js &
+(cd site && python3 -m http.server 8766) &
+node test/e2e.js
+```
 
 ## Limites (à savoir)
 

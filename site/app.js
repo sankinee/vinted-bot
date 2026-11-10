@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '3.7' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '4.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
 };
-const APP_VERSION = '3.7';
-const EXT_MIN = '3.8.0';
+const APP_VERSION = '4.0';
+const EXT_MIN = '4.0.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -155,6 +155,43 @@ function tokens(title, brand) {
   const bw = new Set(norm(brand).split(/[^a-z0-9]+/));
   return [...new Set(norm(title).split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w) && !bw.has(w) && !/^\d+$/.test(w)))].slice(0, 8);
 }
+// Type d'article (multilingue) : un « maglione », un « sweater » et un « pull » sont comparables.
+const TYPE_WORDS = {
+  ensemble: 'ensemble survetement tracksuit tuta chandal trainingsanzug',
+  doudoune: 'doudoune puffer piumino plumifero daunenjacke nuptse',
+  sweat: 'sweat sweatshirt hoodie hoody felpa sudadera capuche',
+  cardigan: 'cardigan gilet',
+  pull: 'pull pullover sweater jumper maglione maglia jersey trui pulli strickpullover tricot knit',
+  tshirt: 'tshirt teeshirt tee maglietta camiseta debardeur',
+  polo: 'polo',
+  chemise: 'chemise chemisier shirt camicia camisa hemd overhemd blouse',
+  manteau: 'manteau coat cappotto abrigo mantel trench parka caban',
+  veste: 'veste jacket giacca chaqueta jacke jas blouson bomber windbreaker softshell polaire fleece',
+  jean: 'jean jeans denim vaquero vaqueros',
+  pantalon: 'pantalon pants trousers pantaloni pantalones chino chinos cargo jogging jogger joggers legging leggings hose broek',
+  short: 'short shorts bermuda',
+  robe: 'robe dress vestito vestido kleid jurk',
+  jupe: 'jupe skirt gonna falda rock rok',
+  baskets: 'baskets basket sneakers sneaker trainers tennis runners requin airmax dunk af1',
+  bottes: 'bottes bottines boots boot stivali botas stiefel chelsea rangers',
+  chaussures: 'chaussures chaussure shoes scarpe zapatos schuhe mocassins mocassin derby derbies richelieu escarpins sandales sandals ballerines loafers',
+  sac: 'sac bag borsa bolso tasche sacoche tote pochette banane cabas backpack',
+  casquette: 'casquette cap cappello gorra bonnet beanie chapeau hat bob',
+  echarpe: 'echarpe scarf sciarpa bufanda schal',
+  ceinture: 'ceinture belt cintura cinturon',
+  montre: 'montre watch orologio reloj uhr',
+};
+const TYPE_OF = new Map(); for (const [t, ws] of Object.entries(TYPE_WORDS)) for (const w of ws.split(' ')) if (!TYPE_OF.has(w)) TYPE_OF.set(w, t);
+function itemType(title, brand) {
+  const bw = new Set(norm(brand).split(/[^a-z0-9]+/));
+  const t = norm(title).replace(/t[\s-]?shirt|tee[\s-]shirt/g, 'tshirt').replace(/sweat[\s-]shirt/g, 'sweatshirt').replace(/air[\s-]max/g, 'airmax').replace(/air[\s-]force/g, 'af1');
+  for (const w of t.split(/[^a-z0-9]+/)) { if (bw.has(w) && w !== 'polo') continue; const ty = TYPE_OF.get(w); if (ty) return ty; }
+  return '';
+}
+// Variantes d'une même marque (« Polo Ralph Lauren » = « Ralph Lauren »…).
+const BRAND_ALIAS = [[/ralphlauren|poloralph/, 'ralphlauren'], [/northface/, 'thenorthface'], [/^levis/, 'levis'], [/tommyhilfiger|tommyjeans/, 'tommyhilfiger'], [/^nike/, 'nike'], [/^adidas/, 'adidas']];
+const brandKeyOf = (b) => { const k = norm(b).replace(/[^a-z0-9]/g, ''); for (const [re, v] of BRAND_ALIAS) if (re.test(k)) return v; return k; };
+
 const quantile = (sorted, q) => {
   if (!sorted.length) return NaN;
   const pos = (sorted.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
@@ -194,6 +231,7 @@ const DB = {
     });
   },
   put(x, dirty = true) {
+    if (x.ty === undefined) { x.ty = itemType(x.t, x.b); x.bk = brandKeyOf(x.b); }
     if (!this.recs.has(x.id)) { let all = this.allByBrand.get(x.bk); if (!all) this.allByBrand.set(x.bk, (all = [])); all.push(x); }
     this.recs.set(x.id, x);
     if (x.state === 'sold') {
@@ -218,7 +256,7 @@ const DB = {
     if (this.recs.has(item.id) || item.price == null) return;
     const now = Date.now();
     this.put({
-      id: item.id, d: itemDomain(item), t: item.title, b: item.brand, bk: brandKey(item.brand), tok: tokens(item.title, item.brand),
+      id: item.id, d: itemDomain(item), t: item.title, b: item.brand, bk: brandKeyOf(item.brand), ty: itemType(item.title, item.brand), tok: tokens(item.title, item.brand),
       sz: item.size, st: item.status, cat: catOf(f), p: item.price, ls: item.ts || now, fs: now, lc: now, k: 0,
       nc: now + CHECKS[0] * (S.settings.demo ? 1 / 300 : 1), state: 'live',
     });
@@ -252,19 +290,20 @@ const DB = {
     }
     this.put(x);
   },
-  // Articles vendus comparables : même marque + mots du titre en commun (+ bonus taille / catégorie).
-  comps(item, f, limit = 40, index = this.soldByBrand) {
-    const bk = brandKey(item.brand), tok = new Set(tokens(item.title, item.brand)), cat = catOf(f);
-    const pool = bk ? index.get(bk) || [] : [...index.values()].flat().slice(-3000);
+  // Comparables : même marque ET même type d'article (pull, veste…) ; à défaut, mots du titre en commun.
+  comps(item, f, limit = 60, index = this.soldByBrand) {
+    const bk = brandKeyOf(item.brand), ty = itemType(item.title, item.brand), tok = new Set(tokens(item.title, item.brand)), cat = catOf(f);
+    if (!bk) return [];
+    const pool = index.get(bk) || [];
     const scored = [];
     for (const x of pool) {
       if (x.id === item.id) continue;
-      const shared = x.tok.filter((t) => tok.has(t)).length;
-      if (!bk && shared < 2) continue;
-      let s = tok.size ? shared / Math.min(tok.size, Math.max(1, x.tok.length)) : 0.5;
-      if (cat && x.cat === cat) s += 0.3;
-      if (x.sz && x.sz === item.size) s += 0.1;
-      if (s >= 0.34) scored.push([s, x]);
+      let s;
+      if (ty) { if (x.ty !== ty) continue; s = 1; }
+      else { const shared = x.tok.filter((t) => tok.has(t)).length; if (!shared) continue; s = shared / Math.max(1, Math.min(tok.size, x.tok.length)); }
+      if (cat && x.cat === cat) s += 0.2;
+      if (x.sz && x.sz === item.size) s += 0.05;
+      scored.push([s, x]);
     }
     scored.sort((a, b) => b[0] - a[0] || (b[1].sa || b[1].fs) - (a[1].sa || a[1].fs));
     return scored.slice(0, limit).map((e) => e[1]);
@@ -276,43 +315,146 @@ const DB = {
   },
 };
 
-/* ================================================================== Estimation */
+/* ================================================================== Horloge Vinted
+   Vinted ne fournit pas toujours la date de publication. Mais les numéros d'annonce augmentent
+   avec le temps : en relevant régulièrement le numéro de la dernière annonce publiée sur tout Vinted,
+   on connaît la vitesse (annonces / seconde) et donc l'âge de n'importe quelle annonce.
+   Les vraies dates, quand Vinted en donne, servent à recaler l'horloge. */
+const Clock = {
+  samples: store.get(S.settings.demo ? 'clock-demo' : 'clock', []).filter((s) => Date.now() - s.t < 6 * 3600000),
+  known: [],
+  nextProbe: 0,
+  _fit: undefined,
+  addSample(id) {
+    const now = Date.now();
+    const last = this.samples[this.samples.length - 1];
+    if (last && id < last.id) return; // numéro plus petit que le précédent : relevé incohérent
+    this.samples.push({ t: now, id });
+    this.samples = this.samples.filter((s) => now - s.t < 6 * 3600000).slice(-60);
+    store.set(S.settings.demo ? 'clock-demo' : 'clock', this.samples);
+    this._fit = undefined;
+  },
+  addKnown(id, ts) {
+    if (!id || !ts) return;
+    this.known.push({ id, ts });
+    if (this.known.length > 400) this.known.splice(0, this.known.length - 300);
+    this._fit = undefined;
+  },
+  regress(pts) { // pts = [[x=temps, y=numéro]]
+    const n = pts.length, mx = pts.reduce((s, p) => s + p[0], 0) / n, my = pts.reduce((s, p) => s + p[1], 0) / n;
+    let sxy = 0, sxx = 0; for (const [x, y] of pts) { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; }
+    return sxx > 0 ? { rate: sxy / sxx, t0: mx, id0: my } : null;
+  },
+  fit() {
+    if (this._fit !== undefined) return this._fit;
+    let f = null;
+    const s = this.samples;
+    if (s.length >= 2 && s[s.length - 1].t - s[0].t >= 55000) f = this.regress(s.map((p) => [p.t, p.id]));
+    else if (this.known.length >= 8) {
+      const k = this.known, span = Math.max(...k.map((p) => p.ts)) - Math.min(...k.map((p) => p.ts));
+      if (span > 30 * 60000) f = this.regress(k.map((p) => [p.ts, p.id]));
+    }
+    if (f && !(f.rate > 0.0003 && f.rate < 0.5)) f = null; // entre 0,3 et 500 annonces / s : sinon incohérent
+    if (f && s.length >= 2 && this.known.length >= 3) {
+      // Recalage : écart médian entre l'estimation et les vraies dates (délai d'indexation de Vinted).
+      const d = this.known.slice(-50).map((p) => p.ts - (f.t0 + (p.id - f.id0) / f.rate)).sort((x, y) => x - y);
+      f.offset = d[Math.floor(d.length / 2)];
+    }
+    this._fit = f;
+    return f;
+  },
+  est(id) {
+    const f = this.fit(); if (!f) return null;
+    return Math.min(Date.now(), f.t0 + (id - f.id0) / f.rate + (f.offset || 0));
+  },
+  ready() { return !!this.fit(); },
+};
+
+// Donne une date (réelle ou estimée) à chaque annonce.
+function dateItems(items) {
+  for (const i of items) {
+    if (i.ts && !i.tsEst) Clock.addKnown(i.id, i.ts);
+  }
+  for (const i of items) {
+    if (!i.ts) { const e = Clock.est(i.id); if (e) { i.ts = e; i.tsEst = true; } }
+  }
+}
+
+/* ================================================================== Estimation
+   Ordre : 1) ventes réelles relevées (même marque + même type), 2) annonces similaires vues
+   (40e percentile : un prix auquel ça part vraiment), 3) sinon recherche automatique de comparables. */
+const MIN_ASK = 6;
+function confidence(n, st, sold) {
+  const cv = st && st.med ? (st.p75 - st.p25) / st.med : 1;
+  if (sold) return n >= 8 ? 'haute' : 'moyenne';
+  if (n >= 15 && cv < 0.7) return 'haute';
+  if (n >= 8) return 'moyenne';
+  return 'faible';
+}
 function soldEstimate(item, f) {
-  const comps = DB.comps(item, f);
+  const comps = DB.comps(item, f, 40, DB.soldByBrand);
   if (comps.length < MIN_SOLD) return { n: comps.length, comps };
   // Prix ramenés à un état « très bon » puis réajustés à l'état de l'article.
   const st = robustStats(comps.map((x) => x.sp / condFactor(x.st)));
   const days = robustStats(comps.map((x) => (x.sa - x.ls) / 86400000).filter((d) => d > 0));
-  return { n: st.n, base: st.med, p25: st.p25, p75: st.p75, days: days.med, comps };
+  return { n: st.n, base: st.med, p25: st.p25, p75: st.p75, days: days.med, comps, conf: confidence(st.n, st, true) };
 }
-
-// Estimation immédiate à partir des annonces déjà vues (même marque + même type d'article),
-// ramenées à l'état « très bon ». On prend le 40e percentile : un prix auquel ça part vraiment,
-// pas la moyenne des prix demandés (souvent trop optimiste).
-const MIN_ASK = 6;
 function askEstimate(item, f) {
-  const comps = DB.comps(item, f, 60, DB.allByBrand).filter((x) => x.state !== 'sold');
+  const comps = DB.comps(item, f, 80, DB.allByBrand).filter((x) => x.state !== 'sold');
   if (comps.length < MIN_ASK) return { n: comps.length, comps };
   const st = robustStats(comps.map((x) => x.p / condFactor(x.st)));
-  return { n: st.n, base: quantile(st.sorted, 0.4), p25: st.p25, p75: st.p75, comps };
+  return { n: st.n, base: quantile(st.sorted, 0.4), p25: st.p25, p75: st.p75, comps, conf: confidence(st.n, st, false) };
 }
 
 function analyse(item, f) {
   const se = soldEstimate(item, f);
-  let base, src, n;
-  if (se.base) { base = se.base * condFactor(item.status); src = 'sold'; n = se.n; }
-  else {
-    const ae = askEstimate(item, f);
-    if (ae.base) { base = ae.base * condFactor(item.status); src = 'ask'; n = ae.n; }
-    else {
-      const st = statsFor(f);
-      if (!st) return null;
-      base = quantile(st.sorted, 0.4); src = 'search'; n = st.n; // repli : toute la recherche
-    }
-  }
-  const resale = Math.max(1, Math.round(base));
+  let est, src;
+  if (se.base) { est = se; src = 'sold'; }
+  else { const ae = askEstimate(item, f); if (ae.base) { est = ae; src = 'ask'; } }
+  if (!est) { Comps.want(item, f); return null; } // pas assez de comparables : on va en chercher
+  if (src === 'ask' && est.conf === 'faible') Comps.want(item, f);
+  const resale = Math.max(1, Math.round(est.base * condFactor(item.status)));
   const cost = buyerTotal(item) + Number(S.settings.shipping || 0);
-  return { resale, profit: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n, days: se.days };
+  return { resale, profit: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n: est.n, conf: est.conf, days: se.days };
+}
+
+/* Recherche automatique de comparables (« Ralph Lauren pull »…) : une requête au plus toutes les
+   15 s, dans les temps morts, et chaque recherche est gardée 12 h. */
+const Comps = {
+  queue: [], next: 0,
+  done: (() => { const d = store.get('compsDone', {}); const now = Date.now(); for (const k of Object.keys(d)) if (now - d[k] > 12 * 3600000) delete d[k]; return d; })(),
+  keyOf(item, f) { return [f ? f.domain : itemDomain(item), brandKeyOf(item.brand), itemType(item.title, item.brand) || tokens(item.title, item.brand)[0] || '', catOf(f)].join('|'); },
+  want(item, f) {
+    if (!item.brand) return;
+    const key = this.keyOf(item, f);
+    if (this.done[key] || this.queue.some((q) => q.key === key)) return;
+    const ty = itemType(item.title, item.brand);
+    const word = ty ? (norm(item.title).split(/[^a-z0-9]+/).find((w) => TYPE_OF.get(w) === ty) || ty) : (tokens(item.title, item.brand)[0] || '');
+    this.queue.push({ key, f, domain: f ? f.domain : itemDomain(item), text: `${item.brand} ${word}`.trim(), cat: catOf(f) });
+    if (this.queue.length > 30) this.queue.shift();
+  },
+  async run(src) {
+    const job = this.queue.shift(); if (!job) return;
+    this.done[job.key] = Date.now(); store.set('compsDone', this.done);
+    const p = new URLSearchParams({ search_text: job.text, order: 'relevance', per_page: '96', page: '1' });
+    if (job.cat) p.append('catalog_ids[]', job.cat);
+    let res; try { res = await src.search(job.domain, p.toString()); } catch { res = { ok: false }; }
+    S.stats.reqTimes.push(Date.now());
+    if (!res.ok) { delete this.done[job.key]; return; }
+    dateItems(res.items || []);
+    for (const i of res.items || []) DB.track(i, job.f);
+    refreshEstimates(job.key);
+  },
+};
+// Recalcule les estimations des cartes concernées (et relance l'achat auto pour les annonces récentes).
+function refreshEstimates(key) {
+  const win = Math.max(1, Number(S.settings.freshMin) || 10) * 60000;
+  for (const rec of S.items.values()) {
+    const f = S.filters.find((x) => x.id === rec.filterId);
+    if (key && Comps.keyOf(rec.item, f) !== key) continue;
+    rec.a = analyse(rec.item, f); paintEst(rec);
+    if (rec.isNew && !rec.abTried && f && (!rec.item.ts || Date.now() - rec.item.ts < win) && abCheck(rec, f)) { rec.abTried = true; abEnqueue(rec, f); }
+  }
 }
 
 function statsFor(f) {
@@ -379,6 +521,14 @@ async function scheduler() {
     const monWait = next ? rt(next).nextAt - now : Infinity;
 
     if (gapLeft <= 0 && monWait <= 0) { S.lastReq = now; poll(next, src); continue; }
+    // Recherche de comparables pour les estimations, dans les temps morts (1 / 15 s au plus).
+    if (gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
+      S.lastReq = now; Comps.next = now + 15000; Comps.run(src); continue;
+    }
+    // Relevé de l'horloge Vinted (dernière annonce publiée sur tout le site), dans les temps morts.
+    if (gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
+      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 120000 : 30000); probeClock(src); continue;
+    }
     // Temps mort : vérifie une annonce suivie (vendue ?) si le prochain moniteur n'est pas imminent.
     const perMin = Number(S.settings.checksPerMin) || 0;
     if (gapLeft <= 0 && perMin > 0 && monWait > S.settings.minGap && now - S.lastCheck >= 60000 / perMin) {
@@ -390,12 +540,30 @@ async function scheduler() {
   }
 }
 
+async function probeClock(src) {
+  const f = S.filters.find((x) => x.enabled);
+  let res;
+  try { res = await src.search(f ? f.domain : 'vinted.fr', 'order=newest_first&per_page=48&page=1'); } catch { res = { ok: false }; }
+  S.stats.reqTimes.push(Date.now());
+  if (!res.ok || !res.items || !res.items.length) return;
+  for (const i of res.items) if (i.ts) Clock.addKnown(i.id, i.ts);
+  Clock.addSample(Math.max(...res.items.map((i) => i.id)));
+  // Les annonces déjà affichées sans date en reçoivent une dès que l'horloge est prête.
+  for (const rec of S.items.values()) {
+    if (!rec.item.ts || rec.item.tsEst) {
+      const e = Clock.est(rec.item.id);
+      if (e) { rec.item.ts = e; rec.item.tsEst = true; const ag = rec.el.querySelector('.age'); ag.dataset.ts = e; ag.dataset.est = '1'; paintAge(ag); }
+    }
+  }
+}
+
 async function checkItem(x, src) {
   x.nc = Date.now() + 60000; // évite une double vérification pendant la requête
   let res;
   try { res = await src.itemStatus(x.d, x.id); } catch (e) { res = { ok: false, status: 0 }; }
   S.stats.reqTimes.push(Date.now());
   if (!res.ok && (res.status === 429 || res.status === 403)) { S.lastCheck = Date.now() + 120000; x.nc = Date.now() + 600000; return; }
+  if (res.ok && res.ts) Clock.addKnown(x.id, res.ts);
   DB.apply(x, res);
 }
 
@@ -431,6 +599,7 @@ async function poll(f, src) {
   S.stats.lat.push(res.ms || ms); if (S.stats.lat.length > 30) S.stats.lat.shift();
 
   const items = res.items || [];
+  dateItems(items);
   learnPrices(r, items);
   for (const i of items) DB.track(i, f);
   if (!r.seeded) {
@@ -463,6 +632,7 @@ function abCheck(rec, f) {
   if (!S.settings.autobuy || !r || !r.on) return null; // (le bouton ⚡ manuel ne passe pas par ces règles)
   if (!(r.maxPrice > 0) || item.price > r.maxPrice) return null;
   if (S.settings.requireSold && (!a || a.src !== 'sold')) return null;
+  if (!a || a.conf === 'faible') return null; // jamais d'achat auto sur une estimation peu fiable
   if (r.minProfit != null && r.minProfit !== '' && (!a || a.profit < Number(r.minProfit))) return null;
   if (r.minDeal && (!a || a.deal < Number(r.minDeal))) return null;
   if (item.ts && Date.now() - item.ts > Math.max(1, Number(S.settings.freshMin) || 10) * 60000) return null; // annonce trop ancienne
@@ -623,6 +793,7 @@ function addItem(item, f, isNew) {
   img.src = safeUrl(item.photo);
   if (isNew) img.loading = 'eager';
   c.querySelector('.age').dataset.ts = item.ts || '';
+  if (item.tsEst) c.querySelector('.age').dataset.est = '1';
   c.querySelector('.price').textContent = eur(item.price);
   c.querySelector('.total').textContent = `${eur(buyerTotal(item))} TTC`;
   const t = c.querySelector('.title'); t.textContent = item.title; t.title = item.title;
@@ -637,7 +808,7 @@ function addItem(item, f, isNew) {
 
   if (isNew) {
     S.stats.found++; rt(f).found++;
-    if (abCheck(rec, f)) abEnqueue(rec, f);
+    if (abCheck(rec, f)) { rec.abTried = true; abEnqueue(rec, f); }
     alertNew(rec, f);
   }
 }
@@ -646,38 +817,58 @@ function paintEst(rec) {
   const { a, el: c } = rec, e = c.querySelector('.est'), b = c.querySelector('.badge');
   e.replaceChildren(); b.textContent = '';
   c.classList.remove('deal');
-  if (!a) { e.textContent = 'Estimation : échantillon en cours…'; return; }
-  e.append(`Revente ~${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
-    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : a.src === 'ask' ? ` · ${a.n} similaires` : ' · recherche'));
-  if (a.deal >= S.settings.highlight && a.profit > 0) { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
+  if (!a) { e.textContent = 'Estimation : recherche de comparables…'; e.title = ''; return; }
+  const dot = el('i', `conf ${a.conf || 'faible'}`);
+  e.title = `Confiance ${a.conf} — ${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces similaires (même marque et même type)`}`;
+  e.append(dot, `Revente ~${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
+    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ` · ${a.n} similaires`));
+  // « Bonne affaire » seulement si l'estimation est assez fiable.
+  if (a.deal >= S.settings.highlight && a.profit > 0 && a.conf !== 'faible') { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
 }
 
 function paintAge(e) {
-  if (!e.dataset.ts) { e.textContent = 'date ?'; e.title = 'Vinted n’a pas fourni la date de publication'; return; }
+  if (!e.dataset.ts) { e.textContent = 'date…'; e.title = 'Âge en cours de calcul (horloge Vinted en calibrage, ~2 min)'; return; }
   const s = Math.max(0, (Date.now() - Number(e.dataset.ts)) / 1000);
-  e.textContent = s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`;
+  e.title = e.dataset.est ? 'Âge estimé d’après le numéro de l’annonce' : 'Date de publication';
+  e.textContent = (e.dataset.est ? '~' : '') + (s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`);
 }
 
 const extAtLeast = (v) => !!S.extVersion && S.extVersion.localeCompare(v, undefined, { numeric: true }) >= 0;
 
 // ⚡ Acheter : achat complet en arrière-plan (fenêtre Vinted cachée), suivi dans la fenêtre de progression.
+// Affiche tout de suite la fenêtre d'achat avec un message (jamais de clic « sans effet »).
+function abPanelNote(item, msg, cls = 'warn') {
+  abPanelStart(item, S.settings.dryRun);
+  abp = null;
+  [...$('#abpSteps').children].forEach((li) => li.classList.remove('cur', 'done'));
+  const m = $('#abpMsg'); m.textContent = msg; m.className = 'abp-msg ' + cls;
+}
+
 async function buy(id) {
   const rec = S.items.get(id); if (!rec) return;
+  const { item } = rec;
   const f = S.filters.find((x) => x.id === rec.filterId) || { name: 'Achat manuel' };
   if (S.settings.demo) return abEnqueue(rec, f, true);
-  if (!S.bridge) return toast("Extension non connectée : impossible d'acheter en arrière-plan.");
-  if (!extAtLeast('2.8.0')) return toast(`Extension ${S.extVersion || '?'} trop ancienne pour l'achat en arrière-plan : mets-la à jour (${EXT_MIN}).`);
+  if (!S.bridge) return abPanelNote(item, "Extension Flipdar Bridge non connectée : installe-la ou recharge la page.", 'bad');
+  if (!extAtLeast('2.8.0')) return abPanelNote(item, `Extension ${S.extVersion || '?'} trop ancienne : mets-la à jour (${EXT_MIN}).`, 'bad');
+  if (AB.busy || AB.queue.length) {
+    abEnqueue(rec, f, true);
+    return toast(`Achat ajouté à la file (${AB.queue.length} en attente).`);
+  }
+  abPanelNote(item, 'Préparation de l’achat…', 'run');
   await refreshExt();
   if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
   // Première fois : l'extension ouvre sa fenêtre « Autoriser Flipdar à acheter ? », puis l'achat part tout seul.
   await Bridge.call({ type: 'requestTrust' }, 5000);
-  toast(S.ext && S.ext.trusted && !S.ext.enabled ? 'Achat désactivé dans l’extension : clique « Autoriser et activer l’achat » dans la fenêtre qui s’ouvre.' : 'Autorise Flipdar dans la fenêtre de l’extension : l’achat démarrera tout seul.');
+  abPanelNote(item, S.ext && S.ext.trusted && !S.ext.enabled
+    ? 'Achat désactivé dans l’extension : clique « Autoriser et activer l’achat » dans la fenêtre qui s’ouvre.'
+    : 'Autorise Flipdar dans la fenêtre de l’extension : l’achat démarrera tout seul.', 'warn');
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
     await refreshExt();
-    if (S.ext && S.ext.enabled && S.ext.trusted) { toast('Autorisé ✓ — achat en cours en arrière-plan.'); return abEnqueue(rec, f, true); }
+    if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
   }
-  toast('Achat annulé : Flipdar n’a pas été autorisé.');
+  abPanelNote(item, 'Achat annulé : Flipdar n’a pas été autorisé dans l’extension.', 'bad');
 }
 
 async function deepEstimate(id) {
@@ -690,19 +881,19 @@ async function deepEstimate(id) {
   dlg.showModal();
 
   const src = source();
-  let ask = null, qtext = '';
+  let ask = null;
   if (src) {
-    const base = new URLSearchParams(f ? f.params : '');
-    const p = new URLSearchParams();
-    qtext = [item.brand, ...tokens(item.title, item.brand).slice(0, 2)].filter(Boolean).join(' ') || item.title;
-    p.set('search_text', qtext);
-    base.getAll('catalog_ids[]').forEach((v) => p.append('catalog_ids[]', v));
-    p.set('order', 'relevance'); p.set('per_page', '96'); p.set('page', '1');
-    const res = await src.search(f ? f.domain : itemDomain(item), p.toString());
-    if (res.ok) {
-      const comps = (res.items || []).filter((i) => i.id !== item.id && i.price != null);
-      comps.forEach((i) => DB.track(i, f)); // enrichit la base : on saura plus tard lesquels se vendent
-      ask = robustStats(comps.map((i) => i.price));
+    // Même recherche ciblée que l'estimation automatique (marque + type d'article).
+    const key = Comps.keyOf(item, f);
+    delete Comps.done[key]; Comps.queue = Comps.queue.filter((q) => q.key !== key);
+    Comps.want(item, f);
+    const job = Comps.queue.find((q) => q.key === key);
+    if (job) {
+      Comps.queue = Comps.queue.filter((q) => q !== job); Comps.queue.unshift(job);
+      const before = new Set(DB.recs.keys());
+      await Comps.run(src);
+      const got = [...DB.recs.values()].filter((x) => !before.has(x.id) || x.cat === job.cat).filter((x) => x.bk === brandKeyOf(item.brand));
+      ask = robustStats(got.map((x) => x.p));
     }
   }
   if (!dlg.open) return;
@@ -718,6 +909,7 @@ async function deepEstimate(id) {
   k('Médiane VENDUE', se.base ? eur(se.base * condFactor(item.status)) : `${se.n}/${MIN_SOLD} ventes`);
   k('Délai de vente', Number.isFinite(se.days) ? `${se.days < 1 ? '< 1' : Math.round(se.days)} j` : '–');
   k(`Prix réaliste (${ae.n} similaires)`, ae.base ? eur(ae.base * condFactor(item.status)) : '–');
+  k('Confiance', a ? a.conf : '–', a && a.conf === 'haute' ? 'p' : a && a.conf === 'faible' ? 'm' : '');
   body.append(kpis);
 
   if (ask && ask.n >= 4) {

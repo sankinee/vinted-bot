@@ -63,17 +63,19 @@ async function vfetch(url, opts = {}) {
 }
 
 /* ------------------------------------------------------------------ Adresses Vinted
-   Vinted change régulièrement ses adresses internes. Ordre d'essai :
-   1) adresse apprise en observant le site Vinted (learn.js), 2) adresses connues,
-   3) lecture des annonces directement dans la page HTML de recherche. */
+   La recherche se lit dans la page Vinted (fiable). Une adresse d'API n'est utilisée que si elle a
+   été VÉRIFIÉE : ses résultats doivent correspondre à la recherche et être triés du plus récent au
+   plus ancien. (Une ancienne version avait adopté par erreur l'adresse du « dressing » d'un vendeur.) */
 const DOM_IN_HOST = /vinted\.[a-z.]+$/;
-let EP = { search: null, item: null };
+const EP_VERSION = 4;
+let EP = { v: EP_VERSION, search: null, item: null, cand: [], lastDiscover: 0 };
 const dead = new Set();
-// Adresses mortes mémorisées 24 h : évite de les réessayer à chaque redémarrage du service worker.
-const saveDead = () => chrome.storage.local.set({ dead: { at: Date.now(), list: [...dead] } });
-const epReady = chrome.storage.local.get(['ep', 'dead']).then(({ ep, dead: d }) => {
-  if (ep) EP = { ...EP, ...ep };
-  if (d && Date.now() - d.at < 86400000) d.list.forEach((u) => dead.add(u));
+const saveEP = () => chrome.storage.local.set({ ep: EP });
+const saveDead = () => chrome.storage.local.set({ dead4: { at: Date.now(), list: [...dead] } });
+const epReady = chrome.storage.local.get(['ep', 'dead4']).then(({ ep, dead4 }) => {
+  if (ep && ep.v === EP_VERSION) EP = { ...EP, ...ep };
+  else { chrome.storage.local.remove(['ep', 'dead']); saveEP(); } // efface les adresses apprises par les anciennes versions
+  if (dead4 && Date.now() - dead4.at < 86400000) dead4.list.forEach((u) => dead.add(u));
   syncLearner();
 });
 
@@ -82,29 +84,32 @@ const SEARCH_CANDIDATES = [
   'https://api.{d}/api/v2/catalog/items',
   'https://api.{d}/catalog/v2/items',
   'https://api.{d}/catalog/items',
-  'https://api.{d}/v2/catalog/items',
 ];
-const ITEM_CANDIDATES = ['https://www.{d}/api/v2/items/{id}', 'https://api.{d}/api/v2/items/{id}', 'https://api.{d}/items/v2/{id}'];
+const ITEM_CANDIDATES = ['https://www.{d}/api/v2/items/{id}', 'https://api.{d}/api/v2/items/{id}'];
 
 function toTemplate(url, kind) {
   const u = new URL(url);
   let path = u.pathname;
   if (kind === 'item') path = path.replace(/\/\d{5,}(?=\/|$)/, '/{id}');
-  return `${u.protocol}//${u.host.replace(DOM_IN_HOST, '{d}')}${path}` + (kind === 'search' ? u.search : '');
+  return `${u.protocol}//${u.host.replace(DOM_IN_HOST, '{d}')}${path}`;
 }
 
+// Adresse repérée sur le site Vinted : seulement une CANDIDATE, vérifiée avant toute utilisation.
 async function learn(kind, url, senderUrl) {
   try { if (!DOM_IN_HOST.test(new URL(senderUrl).hostname)) return; } catch { return; }
-  if (kind !== 'search' && kind !== 'item') return;
-  const tpl = toTemplate(url, kind);
-  if (kind === 'item' && !tpl.includes('{id}')) return;
-  if (EP[kind] === tpl) return;
-  EP[kind] = tpl;
-  await chrome.storage.local.set({ ep: EP });
-  syncLearner();
+  let u; try { u = new URL(url); } catch { return; }
+  if (!DOM_IN_HOST.test(u.hostname)) return;
+  if (kind === 'search') {
+    if (!/catalog/i.test(u.pathname) || !u.searchParams.has('search_text')) return; // pas une recherche catalogue
+    const tpl = toTemplate(url, 'search');
+    if (!EP.cand.includes(tpl) && !dead.has(tpl)) { EP.cand = [tpl, ...EP.cand].slice(0, 3); EP.lastDiscover = 0; saveEP(); }
+  } else if (kind === 'item') {
+    const tpl = toTemplate(url, 'item');
+    if (tpl.includes('{id}') && !EP.item) { EP.item = tpl; saveEP(); }
+  }
 }
 
-// learn.js n'est injecté dans Vinted que tant qu'il reste quelque chose à apprendre.
+// learn.js n'est injecté dans Vinted que tant qu'aucune adresse de recherche n'est validée.
 async function syncLearner() {
   try {
     const need = !EP.search;
@@ -119,15 +124,49 @@ async function syncLearner() {
 }
 
 function searchUrl(tpl, domain, query) {
-  const base = tpl.replace(/\{d\}/g, domain);
-  const u = new URL(base);
-  const ours = new URLSearchParams(query);
-  const FILTER = /search_text|price|brand|size|catalog|status|color|material|page|order|time|session|search_id/;
-  const out = new URLSearchParams();
-  for (const [k, v] of u.searchParams) if (!ours.has(k) && !FILTER.test(k)) out.append(k, v);
-  for (const [k, v] of ours) out.append(k, v);
-  u.search = out.toString();
+  const u = new URL(tpl.replace(/\{d\}/g, domain));
+  u.search = new URLSearchParams(query).toString();
   return u.href;
+}
+
+// Les résultats correspondent-ils à la recherche ? (mots de la recherche dans les titres, tri récent)
+const normTxt = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function fitsQuery(items, query, strict = false) {
+  if (!Array.isArray(items)) return false;
+  if (items.length < 4) return !strict; // trop peu pour juger (une recherche pointue peut être vide)
+  const p = new URLSearchParams(query);
+  const words = normTxt(p.get('search_text')).split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
+  if (words.length) {
+    const hit = items.filter((i) => { const t = normTxt(`${i.title || ''} ${i.brand_title || ''} ${(i.brand && i.brand.title) || ''}`); return words.some((w) => t.includes(w)); }).length;
+    if (hit / items.length < (strict ? 0.8 : 0.5)) return false;
+  }
+  if (p.get('order') === 'newest_first') {
+    const ids = items.map((i) => Number(i.id)).filter(Boolean).slice(2); // les 2 premiers peuvent être sponsorisés
+    let desc = 0; for (let j = 1; j < ids.length; j++) if (ids[j] < ids[j - 1]) desc++;
+    if (ids.length > 3 && desc / (ids.length - 1) < 0.7) return false;
+  }
+  return true;
+}
+
+// Cherche (au plus toutes les 6 h, en tâche de fond) une adresse d'API qui respecte vraiment la recherche.
+let discovering = false;
+async function maybeDiscover(domain) {
+  if (discovering || EP.search || Date.now() - EP.lastDiscover < 6 * 3600000) return;
+  discovering = true; EP.lastDiscover = Date.now(); saveEP();
+  try {
+    for (const tpl of [...EP.cand, ...SEARCH_CANDIDATES]) {
+      if (dead.has(tpl)) continue;
+      let ok = true;
+      for (const probe of ['nike', 'zara']) {
+        const q = `search_text=${probe}&order=newest_first&per_page=24&page=1`;
+        const res = await getJson(searchUrl(tpl, domain, q));
+        if (res.status === 429 || res.captcha) return;
+        if (!(res.ok && fitsQuery(res.data && res.data.items, q, true))) { ok = false; break; }
+      }
+      if (ok) { EP.search = tpl; saveEP(); syncLearner(); return; }
+      dead.add(tpl); saveDead();
+    }
+  } finally { discovering = false; }
 }
 
 async function getJson(url, retry = true) {
@@ -140,7 +179,7 @@ async function getJson(url, retry = true) {
   }
   if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
   if (!/json/.test(r.headers.get('content-type') || '')) return { ok: false, status: 415 };
-  return { ok: true, status: r.status, ms: Date.now() - t0, data: await r.json() };
+  try { return { ok: true, status: r.status, ms: Date.now() - t0, data: await r.json() }; } catch { return { ok: false, status: 415 }; }
 }
 
 // Extrait les annonces du JSON embarqué dans une page (Next.js : __NEXT_DATA__ ou flux RSC).
@@ -214,25 +253,15 @@ async function searchHtml(domain, query) {
 
 async function search(domain, query) {
   await epReady;
-  const tries = [];
-  if (EP.search) tries.push(EP.search);
-  for (const c of SEARCH_CANDIDATES) if (!dead.has(c) && !tries.includes(c)) tries.push(c);
-  let last = null;
-  for (const tpl of tries) {
-    const res = await getJson(searchUrl(tpl, domain, query));
-    if (res.ok && Array.isArray(res.data && res.data.items)) {
-      if (EP.search !== tpl) { EP.search = tpl; chrome.storage.local.set({ ep: EP }); syncLearner(); }
-      return { ...res, via: 'api' };
-    }
-    if (res.status === 429 || res.captcha) return res; // limité / vérification : ne pas insister
-    if (res.status === 404 || res.status === 415 || res.ok) {
-      dead.add(tpl); saveDead();
-      if (tpl === EP.search) { EP.search = null; chrome.storage.local.set({ ep: EP }); syncLearner(); }
-    }
-    last = res;
+  if (EP.search) {
+    const res = await getJson(searchUrl(EP.search, domain, query));
+    if (res.status === 429 || res.captcha) return res;
+    if (res.ok && fitsQuery(res.data && res.data.items, query)) return { ...res, via: 'api' };
+    // L'adresse ne respecte plus la recherche (ou a disparu) : on l'oublie et on lit la page.
+    dead.add(EP.search); saveDead(); EP.search = null; saveEP(); syncLearner();
   }
-  const html = await searchHtml(domain, query);
-  return html.ok ? html : { ...html, error: html.error || (last && `api ${last.status}`) };
+  maybeDiscover(domain); // non bloquant
+  return searchHtml(domain, query);
 }
 
 /* ------------------------------------------------------------------ Config achat auto */
@@ -260,15 +289,36 @@ function toMs(v) {
   if (typeof v === 'string') { if (/^\d{10,13}$/.test(v)) return toMs(Number(v)); const t = Date.parse(v); return Number.isFinite(t) ? t : null; }
   return null;
 }
+// 1) champs connus, 2) sinon tout champ de date au premier niveau de l'annonce ou de sa photo
+//    (jamais dans les objets vendeur/marque, dont les dates ne disent rien de l'annonce).
+const TS_KEY = /(^|_)(created|published|listed|uploaded|timestamp|ts)(_|$)|_at$/i;
+const TS_SKIP = /push|updated|login|loged|seen|promoted|expire|bump|until|last_/i;
 function tsOf(i, ph) {
-  const cands = [
+  const now = Date.now(), ok = (t) => t && t > now - 5 * 365 * 86400000 && t < now + 3600000;
+  const known = [
     ph && ph.high_resolution && ph.high_resolution.timestamp,
     i.created_at_ts, i.created_at, i.item_created_at, i.published_at, i.listed_at,
     Array.isArray(i.photos) && i.photos[0] && i.photos[0].high_resolution && i.photos[0].high_resolution.timestamp,
-    ph && ph.created_at,
   ];
-  for (const c of cands) { const t = toMs(c); if (t && t > 1.3e12 && t < Date.now() + 3600000) return t; }
-  return null;
+  for (const c of known) { const t = toMs(c); if (ok(t)) return t; }
+  let best = null;
+  const scan = (o) => {
+    if (!o || typeof o !== 'object') return;
+    for (const [k, v] of Object.entries(o)) {
+      if (!TS_KEY.test(k) || TS_SKIP.test(k)) continue;
+      const t = toMs(v); if (ok(t) && (best == null || t < best)) best = t;
+    }
+  };
+  scan(i); scan(ph); scan(ph && ph.high_resolution);
+  return best;
+}
+// « Ajouté il y a 17 minutes » (page article) -> horodatage approximatif.
+function tsFromText(html) {
+  const m = html.match(/(?:ajouté|added|subido|aggiunto|hinzugefügt|toegevoegd)[^<]{0,20}?(\d+)\s*(seconde|minute|heure|jour|semaine|mois|an|second|hour|day|week|month|year)/i);
+  if (!m) return null;
+  const n = Number(m[1]), unit = m[2].toLowerCase();
+  const ms = { seconde: 1e3, second: 1e3, minute: 6e4, heure: 36e5, hour: 36e5, jour: 864e5, day: 864e5, semaine: 6048e5, week: 6048e5, mois: 2592e6, month: 2592e6, an: 31536e6, year: 31536e6 }[unit] || 0;
+  return ms ? Date.now() - n * ms : null;
 }
 
 const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? String(v.title || v.name || '') : '');
@@ -339,24 +389,26 @@ async function itemStatus(domain, id) {
   for (const c of ITEM_CANDIDATES) if (!dead.has(c) && !tries.includes(c)) tries.push(c);
   for (const tpl of tries) {
     const res = await getJson(tpl.replace(/\{d\}/g, domain).replace('{id}', id));
-    if (res.ok && res.data && res.data.item) {
-      if (EP.item !== tpl) { EP.item = tpl; chrome.storage.local.set({ ep: EP }); }
-      return { ok: true, via: 'api', ...statusFromJson(res.data.item) };
+    const it = res.ok && res.data && res.data.item;
+    if (it && Number(it.id) === id) {
+      if (EP.item !== tpl) { EP.item = tpl; saveEP(); }
+      return { ok: true, via: 'api', ts: tsOf(it, it.photo || (it.photos && it.photos[0])), ...statusFromJson(it) };
     }
-    if (res.status === 429) return res;
-    // 404 ici = adresse d'API disparue OU article supprimé : impossible de savoir, on passe à la page.
-    if (res.status === 415 || (res.ok && !res.data.item)) dead.add(tpl);
-    if (res.status === 404 && tpl !== EP.item) dead.add(tpl);
+    if (res.status === 429 || res.captcha) return res;
+    // Réponse inattendue, ou 404 (adresse disparue OU article supprimé : impossible à dire) : on passe à la page.
+    if (res.ok || res.status === 415 || res.status === 404) { dead.add(tpl); saveDead(); if (tpl === EP.item) { EP.item = null; saveEP(); } }
   }
   // Page de l'article (comme dans le navigateur) : une annonce vendue y reste visible avec son prix.
   const r = await fetchPage(`https://www.${domain}/items/${id}`);
+  if (r.captcha) return { ok: false, status: 403, captcha: true };
   if (r.status === 404 || r.status === 410) return { ok: true, state: 'gone', price: null, via: 'page' };
   if (!r.ok) return { ok: false, status: r.status };
-  if (!new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
+  if (r.url && !new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
   const { corpus, rsc, html } = await readPage(r);
-  const objs = extractObjects(corpus, (o) => o && o.id === id);
-  if (objs.length) return { ok: true, via: rsc ? 'rsc' : 'page', ...statusFromJson(objs[0]) };
-  return { ok: true, via: 'page', ...statusFromHtml(html || corpus) };
+  const objs = extractObjects(corpus, (o) => o && Number(o.id) === id);
+  const ts = (objs[0] && tsOf(objs[0], objs[0].photo)) || (html ? tsFromText(html) : null);
+  if (objs.length) return { ok: true, via: rsc ? 'rsc' : 'page', ts, ...statusFromJson(objs[0]) };
+  return { ok: true, via: 'page', ts, ...statusFromHtml(html || corpus) };
 }
 
 /* ------------------------------------------------------------------ Achat automatique */
@@ -519,7 +571,7 @@ async function handle(msg, sender) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, send) => {
-  if (msg && ['job?', 'jobPhase', 'jobResult'].includes(msg.type)) { onCheckoutMessage(msg, sender, send); return false; }
+  if (msg && ['job?', 'jobPhase', 'jobResult', 'manualDone'].includes(msg.type)) { onCheckoutMessage(msg, sender, send); return false; }
   if (msg && msg.type === 'learn') { learn(msg.kind, msg.url, sender.url || ''); return false; }
   handle(msg, sender).then(send, (e) => send({ ok: false, status: 0, error: String((e && e.message) || e) }));
   return true;

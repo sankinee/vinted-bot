@@ -179,3 +179,6 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .abp-steps li small { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
 .abp-msg { font-size: 13px; margin-bottom: 8px; }
 .abp-msg.ok { color: var(--good); font-weight: 700; } .abp-msg.warn { color: var(--warn); } .abp-msg.bad { color: var(--bad); }
+
+.est .conf { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--muted); }
+.est .conf.haute { background: var(--good); } .est .conf.moyenne { background: var(--warn); } .est .conf.faible { background: var(--bad); }

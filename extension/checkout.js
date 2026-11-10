@@ -14,6 +14,10 @@
   const PAY_RE = /^(payer|payer maintenant|confirmer et payer|pay|pay now|confirm and pay|pagar|paga|paga ora|bezahlen|jetzt bezahlen|betalen|nu betalen|zapłać|plătește|zaplatit|zaplatiť|maksa|betala|betal|fizetés|plati|πληρωμή)\b/i;
   const SUCCESS_RE = /(merci pour (ton|votre) (achat|commande)|paiement (réussi|effectué|confirmé|accepté)|commande (confirmée|passée)|achat (confirmé|effectué)|thank you for your (purchase|order)|payment (successful|complete)|purchase (successful|complete))/i;
   const UNAVAILABLE_RE = /(déjà (été )?vendu|n'est plus disponible|already sold|no longer available|est réservé|is reserved|ya se ha vendido|non è più disponibile|nicht mehr verfügbar)/i;
+  // Badge « Vendu » / « Réservé » sur la page de l'article.
+  const SOLD_WORD = /^(vendu|réservé|sold|reserved|venduto|riservato|vendido|reservado|verkauft|reserviert|verkocht|gereserveerd|sprzedane|zarezerwowane)$/i;
+  const soldBadge = () => !!document.querySelector('[data-testid*="sold" i], [data-testid*="reserved" i]')
+    || [...document.querySelectorAll('span, div, p, strong, b, h2, h3')].some((e) => e.children.length === 0 && SOLD_WORD.test((e.textContent || '').trim()) && !inChrome(e));
   const SUCCESS_URL = /\/(inbox\/\d+|transactions?\/\d+|orders?\/\d+)|purchase_complete|payment_success/i;
   const HOME_DELIVERY_RE = /(livraison à domicile|à domicile|home delivery|to your home|a domicilio|nach hause|thuisbezorging)/i;
   const THREEDS_SEL = 'iframe[src*="3ds" i], iframe[src*="challenge" i], iframe[name*="challenge" i], iframe[src*="acs" i], iframe[title*="3D" i], iframe[src*="adyen" i]';
@@ -157,7 +161,7 @@
     const t0 = Date.now();
     while (!buy && Date.now() - t0 < 20000) {
       buy = findBuy();
-      if (!buy) { if (Date.now() - t0 > 3000 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(120); }
+      if (!buy) { if (Date.now() - t0 > 2500 && (soldBadge() || UNAVAILABLE_RE.test(text()))) return report('unavailable', { reason: 'Article déjà vendu ou réservé' }); await sleep(120); }
     }
     if (!buy) return report(buyDisabledOnly() ? 'action' : 'unavailable', { reason: (buyDisabledOnly() ? 'Bouton « Acheter » grisé' : 'Bouton « Acheter » introuvable') + ' ' + buyDiag() });
     // La page s'affiche avant que ses boutons soient « branchés » (surtout dans une fenêtre cachée) :
