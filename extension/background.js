@@ -392,12 +392,15 @@ async function autobuy(msg, origin, siteTab) {
   let tab;
   let winId = null;
   try {
-    // Onglet en arrière-plan (jamais affiché, sans prendre le focus) : contrairement à une fenêtre
-    // réduite, la page y est réellement mise en page, donc les boutons Vinted fonctionnent.
-    const site = siteTab != null ? await chrome.tabs.get(siteTab).catch(() => null) : null;
-    tab = await chrome.tabs.create({ url, active: false, ...(site ? { windowId: site.windowId, index: site.index + 1 } : {}) });
+    // Petite fenêtre dans le coin de l'écran, sans prendre le focus. Elle doit être visible :
+    // dans un onglet caché ou une fenêtre réduite, Vinted ne passe pas à la page de paiement.
+    const W = 480, H = 760, sw = Number(msg.screenW) || 1920, sh = Number(msg.screenH) || 1040;
+    const win = await chrome.windows.create({ url, type: 'popup', focused: false, width: W, height: H, left: Math.max(0, sw - W - 8), top: Math.max(0, sh - H - 8) });
+    winId = win.id; tab = win.tabs[0];
     chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
-  } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
+  } catch {
+    try { tab = await chrome.tabs.create({ url, active: true }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
+  }
 
   const result = await new Promise((resolve) => {
     const job = { tabId: tab.id, winId, siteTab, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };

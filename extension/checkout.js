@@ -43,7 +43,7 @@
   function buyDiag() {
     const els = [...document.querySelectorAll('button, [role="button"], a')].filter((b) => /achet|buy|kauf|compr|koop|kup/i.test(labelOf(b) + ' ' + (b.getAttribute('data-testid') || '')));
     const d = els.slice(0, 6).map((b) => `${b.tagName.toLowerCase()}"${labelOf(b).slice(0, 25)}"${b.getAttribute('data-testid') ? '#' + b.getAttribute('data-testid') : ''}${shown(b) ? '' : ' invisible'}${enabled(b) ? '' : ' grisé'}${inChrome(b) ? ' menu' : ''}`);
-    return `[diag ${document.readyState}, ${els.length} bouton(s) : ${d.join(' | ') || 'aucun'}]`;
+    return `[diag ${document.readyState}, page ${document.visibilityState} ${innerWidth}×${innerHeight}, ${els.length} bouton(s) : ${d.join(' | ') || 'aucun'}]`;
   }
   // Diagnostic de la page de paiement : boutons, choix de livraison, champs à remplir.
   function payDiag() {

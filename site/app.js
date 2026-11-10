@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '3.5' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '3.6' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
 };
-const APP_VERSION = '3.5';
-const EXT_MIN = '3.6.0';
+const APP_VERSION = '3.6';
+const EXT_MIN = '3.7.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -488,7 +488,7 @@ async function abRun() {
   abPanelStart(item, S.settings.dryRun);
   const src = source();
   const maxTotal = +(buyerTotal(item) + Number(S.settings.maxShipping || 0)).toFixed(2);
-  const res = src ? await src.autobuy({ domain: itemDomain(item), itemId: item.id, maxTotal, dryRun: S.settings.dryRun, humanDelay: true })
+  const res = src ? await src.autobuy({ domain: itemDomain(item), itemId: item.id, maxTotal, dryRun: S.settings.dryRun, humanDelay: true, screenW: screen.availWidth + (screen.availLeft || 0), screenH: screen.availHeight + (screen.availTop || 0) })
     : { ok: false, status: 'error', reason: 'Extension non connectée' };
   Object.assign(entry, { status: res.status || 'error', reason: res.reason || res.error || '', total: res.total, ms: res.ms });
   store.set(S.settings.demo ? 'ablog-demo' : 'ablog', AB.log);
