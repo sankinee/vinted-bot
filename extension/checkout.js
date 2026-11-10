@@ -60,6 +60,26 @@
     return btns.find((b) => usable(b) && isPay(b)) || btns.find((b) => enabled(b) && isPay(b)); // visible d'abord, sinon masqué mais actif
   }
   const payPresentButDisabled = () => [...document.querySelectorAll('button, [role="button"]')].some((b) => !inChrome(b) && PAY_RE.test(labelOf(b)) && !enabled(b));
+  // Clic « complet » comme une vraie souris : survol, appui, relâchement, puis clic.
+  // (Beaucoup de boutons ne réagissent pas à un simple element.click().)
+  function humanClick(el) {
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    const P = window.PointerEvent || MouseEvent;
+    try { el.scrollIntoView({ block: 'center' }); } catch { /* rien */ }
+    el.dispatchEvent(new P('pointerover', o)); el.dispatchEvent(new P('pointerenter', { ...o, bubbles: false }));
+    el.dispatchEvent(new MouseEvent('mouseover', o)); el.dispatchEvent(new MouseEvent('mouseenter', { ...o, bubbles: false }));
+    el.dispatchEvent(new P('pointerdown', o)); el.dispatchEvent(new MouseEvent('mousedown', o));
+    try { el.focus({ preventScroll: true }); } catch { /* rien */ }
+    el.dispatchEvent(new P('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 }));
+    el.click();
+  }
+  // Après « Acheter » : la page a-t-elle réagi (navigation, fenêtre de paiement, bouton Payer) ?
+  const startPath = location.pathname;
+  const DLG = '[role="dialog"], dialog[open], [data-testid*="checkout" i], iframe[src*="checkout" i]';
+  let dialogsBefore = 0; // fenêtres déjà présentes (bannière cookies…) avant le clic
+  const reacted = () => location.pathname !== startPath || !!findPay() || document.querySelectorAll(DLG).length > dialogsBefore;
+
   // Attentes basées sur l'horloge (les onglets cachés ralentissent les minuteurs).
   const waitFor = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(120); } return fn() || null; };
 
@@ -90,7 +110,7 @@
     const t = (e) => e.innerText || e.textContent || '';
     const pick = opts.find((e) => HOME_DELIVERY_RE.test(t(e))) || opts.find((e) => e.matches('[role="radio"], label') && /livraison|delivery|envío|consegna|lieferung|point relais|pickup/i.test(t(e)));
     if (!pick) return false;
-    pick.click();
+    humanClick(pick);
     await sleep(rand(500, 900));
     return true;
   }
@@ -106,7 +126,7 @@
     if (location.hash === '#flipdar-buy') history.replaceState(null, '', location.pathname + location.search);
     const b = await waitFor(findBuy, 20000);
     if (job && job.manual) ask({ type: 'manualDone', found: !!b });
-    if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
+    if (b) humanClick(b);
     return;
   }
 
@@ -142,7 +162,17 @@
     if (job.delay) await sleep(rand(150, 400));
     await step('buy', 'Clic sur « Acheter »', { phase: 'checkout' });
     job.phase = 'checkout';
-    buy.click();
+    dialogsBefore = document.querySelectorAll(DLG).length;
+    humanClick(buy);
+    // Si rien ne se passe, on réessaie (bouton re-rendu par la page), puis on abandonne avec un message clair.
+    let ok = !!(await waitFor(reacted, 6000));
+    for (let attempt = 0; !ok && attempt < 2; attempt++) {
+      const again = findBuy() || buy;
+      const inner = again.querySelector('span') || again;
+      humanClick(attempt === 0 ? again : inner);
+      ok = !!(await waitFor(reacted, 5000));
+    }
+    if (!ok) return report('action', { reason: 'Le clic sur « Acheter » n’a rien déclenché sur la page Vinted ' + buyDiag() });
   }
 
   // Étape 2 : récapitulatif / paiement (même onglet, après navigation).
@@ -178,6 +208,6 @@
   if (!usable(pay)) pay = findPay();
   if (!pay) return report('action', { reason: 'Le bouton « Payer » a disparu' });
   await step('pay', 'Paiement envoyé', { phase: 'clicked', total });
-  pay.click();
+  humanClick(pay);
   return awaitOutcome(total);
 })();
