@@ -333,6 +333,7 @@ async function workerFetch(url, rsc) {
 async function workerNav(url) {
   if (!(await gate())) return { ok: false, status: 429, retryAfter: Math.ceil(cooldownLeft() / 1000) };
   RL.times.push(Date.now(), Date.now()); // une page complète déclenche d'autres requêtes : elle compte triple
+  WK.lastNavAt = Date.now();
   WK.ready = false;
   const asked = await sendWorker({ type: 'wnav', url }, 3000);
   if (!asked) await chrome.tabs.update(WK.tabId, { url }).catch(() => {}); // onglet muet : rechargement direct
@@ -362,7 +363,8 @@ async function workerSearch(domain, query) {
     // Vérifie sur la vraie page : au début, puis toutes les 10 min ; et dès 2 min sans aucune
     // nouvelle annonce (une recherche figée se voit à ça).
     const quiet = Date.now() - qs.lastNewAt > 2 * 60000;
-    const verifyDue = !fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000);
+    // … et au plus une vérification par minute, toutes recherches confondues (elles sont lentes).
+    const verifyDue = (!fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000)) && Date.now() - (WK.lastNavAt || 0) > 60000;
 
     let res;
     if (WK.mode === 'nav' && !verifyDue) res = await workerNav(url);

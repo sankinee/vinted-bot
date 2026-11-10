@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '5.1' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '5.2' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
 };
-const APP_VERSION = '5.1';
-const EXT_MIN = '5.0.0';
+const APP_VERSION = '5.2';
+const EXT_MIN = '5.2.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -97,7 +97,7 @@ const Bridge = {
 };
 
 const Live = {
-  search: (domain, query) => Bridge.call({ type: 'search', domain, query }),
+  search: (domain, query) => Bridge.call({ type: 'search', domain, query }, 45000), // peut attendre son tour dans l'onglet Vinted
   itemStatus: (domain, id, wantTs) => Bridge.call({ type: 'itemStatus', domain, id, wantTs: !!wantTs }),
   autobuy: (p) => Bridge.call({ type: 'autobuy', ...p }, 70000),
 };
@@ -536,13 +536,15 @@ async function scheduler() {
   for (;;) {
     const src = source();
     if (!S.running || !src || !S.leader || (S.cooldown > 0 && !S.settings.demo)) { await sleep(250); continue; }
+    // Une seule requête à la fois : on attend la réponse avant d'envoyer la suivante (pas d'embouteillage).
+    if (S.inflight > 0) { await sleep(60); continue; }
     const now = Date.now();
     const gapLeft = S.lastReq + S.settings.minGap - now;
     let next = null;
     for (const f of S.filters) { if (!f.enabled) continue; const r = rt(f); if (!r.busy && (!next || r.nextAt < rt(next).nextAt)) next = f; }
     const monWait = next ? rt(next).nextAt - now : Infinity;
 
-    if (gapLeft <= 0 && monWait <= 0) { S.lastReq = now; poll(next, src); continue; }
+    if (gapLeft <= 0 && monWait <= 0) { S.lastReq = now; track(poll(next, src)); continue; }
     // Tâches de fond (comparables, horloge, suivi des ventes) : seulement avec les requêtes qui restent
     // une fois les recherches servies, et pas dans les 5 min qui suivent une pause imposée par Vinted.
     const recent = S.stats.reqTimes.filter((t) => now - t < 60000).length;
@@ -550,21 +552,26 @@ async function scheduler() {
     const extras = S.settings.demo || (!S.settings.sniper && recent < (S.extCap || 15) - 3 && now > (S.calmUntil || 0));
     // Recherche de comparables pour les estimations (1 / min au plus).
     if (extras && gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
-      S.lastReq = now; Comps.next = now + (S.settings.demo ? 15000 : 60000); Comps.run(src); continue;
+      S.lastReq = now; Comps.next = now + (S.settings.demo ? 15000 : 60000); track(Comps.run(src)); continue;
     }
     // Relevé de l'horloge Vinted (dernière annonce publiée sur tout le site), dans les temps morts.
     if (extras && gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
-      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 180000 : 40000); probeClock(src); continue;
+      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 180000 : 40000); track(probeClock(src)); continue;
     }
     // Temps mort : vérifie une annonce suivie (vendue ?) si le prochain moniteur n'est pas imminent.
     const perMin = Number(S.settings.checksPerMin) || 0;
     if (extras && gapLeft <= 0 && perMin > 0 && monWait > S.settings.minGap && now - S.lastCheck >= 60000 / perMin) {
       const x = DB.nextDue(now);
-      if (x) { S.lastReq = S.lastCheck = now; checkItem(x, src); continue; }
+      if (x) { S.lastReq = S.lastCheck = now; track(checkItem(x, src)); continue; }
       S.lastCheck = now - 60000 / perMin + 2000; // rien à vérifier : réessaie dans 2 s
     }
     await sleep(Math.max(15, Math.min(Math.max(gapLeft, monWait), 200)));
   }
+}
+
+function track(promise) {
+  S.inflight = (S.inflight || 0) + 1;
+  Promise.resolve(promise).catch(() => {}).finally(() => { S.inflight--; S.lastReq = Date.now(); });
 }
 
 async function probeClock(src) {
@@ -633,6 +640,10 @@ async function poll(f, src) {
   S.stats.reqTimes.push(Date.now());
   if (!S.filters.includes(f)) return;
 
+  if (!res.ok && res.error === 'timeout') {
+    // Vinted lent à répondre : on réessaie bientôt, sans compter ça comme une erreur.
+    r.err = ''; r.slow = (r.slow || 0) + 1; r.nextAt = Date.now() + 3000; return;
+  }
   if (!res.ok) {
     const limited = res.status === 429 || res.status === 403;
     if (res.status === 429 && res.retryAfter > 60) { S.cooldown = res.retryAfter * 1000; S.cooldownAt = Date.now(); }
@@ -644,7 +655,8 @@ async function poll(f, src) {
     r.nextAt = Date.now() + r.backoff;
     return;
   }
-  r.backoff = 0; r.err = ''; r.via = res.via || ''; if (res.fresh) r.fresh = res.fresh;
+  r.backoff = 0; r.err = ''; r.slow = 0; r.via = res.via || ''; if (res.fresh) r.fresh = res.fresh;
+  (r.polls ||= []).push(Date.now()); if (r.polls.length > 8) r.polls.shift();
   S.stats.lat.push(res.ms || ms); if (S.stats.lat.length > 30) S.stats.lat.shift();
 
   const items = res.items || [];
@@ -1075,7 +1087,11 @@ function renderMonitorStatus(f) {
   s.replaceChildren(el('span', '', f.domain.replace('vinted.', '').toUpperCase()), el('span', '', `${r.found} trouvés`),
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
-  if (S.settings.sniper) s.append(el('span', '', '🎯 Sniper 5 s'));
+  if (S.settings.sniper) s.append(el('span', '', '🎯 Sniper'));
+  if (r.polls && r.polls.length >= 3) {
+    const every = (r.polls[r.polls.length - 1] - r.polls[0]) / (r.polls.length - 1) / 1000;
+    s.append(el('span', every > 20 ? 'err' : '', `vérifiée toutes les ~${Math.round(every)} s`));
+  }
   if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API', 'tab-rsc': 'via onglet Vinted', 'tab-page': 'via onglet Vinted', nav: 'via page réelle (F5)' }[r.via] || r.via));
   if (r.fresh) {
     const ago = fmtAge(Date.now() - r.fresh.at);
