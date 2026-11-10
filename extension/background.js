@@ -192,6 +192,7 @@ async function searchHtml(domain, query) {
   const p = new URLSearchParams(query);
   for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
   p.delete('per_page');
+  p.set('time', String(Math.floor(Date.now() / 1000))); // évite une page de résultats mise en cache par Vinted
   const t0 = Date.now();
   const r = await fetchPage(`https://www.${domain}/catalog?${p}`);
   if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0, captcha: !!r.captcha };

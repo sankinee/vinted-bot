@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '3.2' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '3.3' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -27,9 +27,9 @@ const store = {
 
 const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
-  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
+  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
 };
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 const EXT_MIN = '3.1.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
@@ -50,6 +50,7 @@ const STOP = new Set('les des une pour avec sans dans sur par taille homme femme
 // Réglages : passage aux valeurs prudentes (anti-blocage) pour les anciennes installations.
 function loadSettings() {
   const s = { ...DEFAULTS, ...store.get('settings', {}) };
+  if (!s.est32) { s.requireSold = false; s.freshMin = s.freshMin || 10; s.est32 = true; store.set('settings', s); }
   if (!s.safe27) { s.interval = Math.max(s.interval, 6); s.minGap = Math.max(s.minGap, 1500); s.checksPerMin = Math.min(s.checksPerMin, 4); s.safe27 = true; store.set('settings', s); }
   return s;
 }
@@ -175,7 +176,7 @@ const catOf = (f) => (f ? new URLSearchParams(f.params).get('catalog_ids[]') || 
    plus tard. Si elle est passée « vendue », on enregistre le prix de vente réel et le délai.
    Stockage local (IndexedDB) dans ton navigateur, exportable. */
 const DB = {
-  db: null, recs: new Map(), soldByBrand: new Map(), dirty: new Set(),
+  db: null, recs: new Map(), soldByBrand: new Map(), allByBrand: new Map(), dirty: new Set(), checks: { done: 0, sold: 0, gone: 0, live: 0, unknown: 0 },
   name: () => (S.settings.demo ? 'flipdar-demo' : 'flipdar'),
   async open() {
     await new Promise((res) => {
@@ -193,6 +194,7 @@ const DB = {
     });
   },
   put(x, dirty = true) {
+    if (!this.recs.has(x.id)) { let all = this.allByBrand.get(x.bk); if (!all) this.allByBrand.set(x.bk, (all = [])); all.push(x); }
     this.recs.set(x.id, x);
     if (x.state === 'sold') {
       let a = this.soldByBrand.get(x.bk);
@@ -203,6 +205,7 @@ const DB = {
   },
   remove(x) {
     this.recs.delete(x.id); this.dirty.add(x.id);
+    const all = this.allByBrand.get(x.bk); if (all) { const j = all.indexOf(x); if (j >= 0) all.splice(j, 1); }
     const a = this.soldByBrand.get(x.bk); if (a) { const i = a.indexOf(x); if (i >= 0) a.splice(i, 1); }
   },
   flush() {
@@ -234,6 +237,7 @@ const DB = {
   },
   apply(x, res) {
     const now = Date.now(), scale = S.settings.demo ? 1 / 300 : 1;
+    this.checks.done++; this.checks[res.ok ? res.state : 'unknown'] = (this.checks[res.ok ? res.state : 'unknown'] || 0) + 1;
     if (!res.ok || res.state === 'unknown') { x.nc = now + 3600000 * scale; this.put(x); return; }
     if (res.state === 'sold') {
       x.state = 'sold'; x.sp = res.price ?? x.p; x.sa = Math.round((x.lc + now) / 2);
@@ -249,9 +253,9 @@ const DB = {
     this.put(x);
   },
   // Articles vendus comparables : même marque + mots du titre en commun (+ bonus taille / catégorie).
-  comps(item, f, limit = 40) {
+  comps(item, f, limit = 40, index = this.soldByBrand) {
     const bk = brandKey(item.brand), tok = new Set(tokens(item.title, item.brand)), cat = catOf(f);
-    const pool = bk ? this.soldByBrand.get(bk) || [] : [...this.soldByBrand.values()].flat();
+    const pool = bk ? index.get(bk) || [] : [...index.values()].flat().slice(-3000);
     const scored = [];
     for (const x of pool) {
       if (x.id === item.id) continue;
@@ -262,7 +266,7 @@ const DB = {
       if (x.sz && x.sz === item.size) s += 0.1;
       if (s >= 0.34) scored.push([s, x]);
     }
-    scored.sort((a, b) => b[0] - a[0] || b[1].sa - a[1].sa);
+    scored.sort((a, b) => b[0] - a[0] || (b[1].sa || b[1].fs) - (a[1].sa || a[1].fs));
     return scored.slice(0, limit).map((e) => e[1]);
   },
   counts() {
@@ -282,14 +286,29 @@ function soldEstimate(item, f) {
   return { n: st.n, base: st.med, p25: st.p25, p75: st.p75, days: days.med, comps };
 }
 
+// Estimation immédiate à partir des annonces déjà vues (même marque + même type d'article),
+// ramenées à l'état « très bon ». On prend le 40e percentile : un prix auquel ça part vraiment,
+// pas la moyenne des prix demandés (souvent trop optimiste).
+const MIN_ASK = 6;
+function askEstimate(item, f) {
+  const comps = DB.comps(item, f, 60, DB.allByBrand).filter((x) => x.state !== 'sold');
+  if (comps.length < MIN_ASK) return { n: comps.length, comps };
+  const st = robustStats(comps.map((x) => x.p / condFactor(x.st)));
+  return { n: st.n, base: quantile(st.sorted, 0.4), p25: st.p25, p75: st.p75, comps };
+}
+
 function analyse(item, f) {
   const se = soldEstimate(item, f);
   let base, src, n;
   if (se.base) { base = se.base * condFactor(item.status); src = 'sold'; n = se.n; }
   else {
-    const st = statsFor(f);
-    if (!st) return null;
-    base = st.med * 0.9; src = 'ask'; n = st.n; // prix demandés > prix vendus
+    const ae = askEstimate(item, f);
+    if (ae.base) { base = ae.base * condFactor(item.status); src = 'ask'; n = ae.n; }
+    else {
+      const st = statsFor(f);
+      if (!st) return null;
+      base = quantile(st.sorted, 0.4); src = 'search'; n = st.n; // repli : toute la recherche
+    }
   }
   const resale = Math.max(1, Math.round(base));
   const cost = buyerTotal(item) + Number(S.settings.shipping || 0);
@@ -420,9 +439,15 @@ async function poll(f, src) {
     items.slice(0, 12).reverse().forEach((i) => addItem(i, f, false));
   } else {
     // Les IDs Vinted sont croissants : ID > max = vraie nouvelle annonce (ignore remontées et boosts).
+    // « Nouveau » seulement si publié récemment : une annonce indexée en retard par Vinted
+    // s'affiche (grisée) mais ne déclenche ni alerte ni achat auto.
     const fresh = items.filter((i) => i.id > r.maxId).sort((a, b) => a.id - b.id);
-    if (fresh.length) { r.maxId = fresh[fresh.length - 1].id; fresh.forEach((i) => addItem(i, f, true)); }
+    const win = Math.max(1, Number(S.settings.freshMin) || 10) * 60000;
+    if (fresh.length) { r.maxId = fresh[fresh.length - 1].id; fresh.forEach((i) => addItem(i, f, !i.ts || Date.now() - i.ts < win)); }
   }
+  // Retard de Vinted : âge de l'annonce la plus récente renvoyée.
+  const newest = items.reduce((m, i) => Math.max(m, i.ts || 0), 0);
+  r.lag = newest ? Date.now() - newest : 0;
   r.nextAt = Date.now() + Math.max(1, S.settings.interval) * 1000 * (0.8 + Math.random() * 0.4);
 }
 
@@ -440,7 +465,7 @@ function abCheck(rec, f) {
   if (S.settings.requireSold && (!a || a.src !== 'sold')) return null;
   if (r.minProfit != null && r.minProfit !== '' && (!a || a.profit < Number(r.minProfit))) return null;
   if (r.minDeal && (!a || a.deal < Number(r.minDeal))) return null;
-  if (item.ts && Date.now() - item.ts > 15 * 60000) return null; // annonce trop ancienne (remontée)
+  if (item.ts && Date.now() - item.ts > Math.max(1, Number(S.settings.freshMin) || 10) * 60000) return null; // annonce trop ancienne
   return true;
 }
 
@@ -623,7 +648,7 @@ function paintEst(rec) {
   c.classList.remove('deal');
   if (!a) { e.textContent = 'Estimation : échantillon en cours…'; return; }
   e.append(`Revente ~${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
-    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ' · annonces'));
+    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : a.src === 'ask' ? ` · ${a.n} similaires` : ' · recherche'));
   if (a.deal >= S.settings.highlight && a.profit > 0) { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
 }
 
@@ -681,7 +706,7 @@ async function deepEstimate(id) {
   }
   if (!dlg.open) return;
   rec.a = analyse(item, f); paintEst(rec);
-  const se = soldEstimate(item, f), a = rec.a;
+  const se = soldEstimate(item, f), ae = askEstimate(item, f), a = rec.a;
 
   body.replaceChildren();
   const kpis = el('div', 'kpis');
@@ -691,7 +716,7 @@ async function deepEstimate(id) {
   k('Profit estimé', a ? (a.profit >= 0 ? '+' : '') + eur(a.profit) : '–', a && a.profit >= 0 ? 'p' : 'm');
   k('Médiane VENDUE', se.base ? eur(se.base * condFactor(item.status)) : `${se.n}/${MIN_SOLD} ventes`);
   k('Délai de vente', Number.isFinite(se.days) ? `${se.days < 1 ? '< 1' : Math.round(se.days)} j` : '–');
-  k('Médiane annonces', ask && ask.n >= 4 ? eur(ask.med) : '–');
+  k(`Prix réaliste (${ae.n} similaires)`, ae.base ? eur(ae.base * condFactor(item.status)) : '–');
   body.append(kpis);
 
   if (ask && ask.n >= 4) {
@@ -711,11 +736,17 @@ async function deepEstimate(id) {
       ul.append(li);
     }
     body.append(el('div', 'section-t', `Articles similaires vendus (${se.comps.length})`), ul);
+  } else if (ae.comps.length) {
+    const ul = el('ul', 'comps');
+    for (const x of ae.comps.slice(0, 8)) { const li = el('li'); li.append(el('span', '', `${x.t} · ${x.st || ''}`), el('span', '', eur(x.p, 0))); ul.append(li); }
+    body.append(el('div', 'section-t', `Annonces les plus proches (${ae.comps.length})`), ul);
   }
   body.append(el('p', 'note',
     (a && a.src === 'sold'
       ? `Estimation basée sur ${a.n} ventes réelles relevées par Flipdar (prix final constaté sur la page de l'article vendu). `
-      : `Pas encore assez de ventes connues pour cet article (${se.n}/${MIN_SOLD}) : estimation provisoire à partir des prix demandés (−10 %). Les ${ask ? ask.n : 0} annonces comparables viennent d'être ajoutées au suivi. `) +
+      : a && a.src === 'ask'
+        ? `Pas encore assez de ventes relevées (${se.n}/${MIN_SOLD}) : estimation à partir de ${a.n} annonces similaires (même marque et même type), au prix sous lequel se trouvent 40 % d'entre elles (prix réaliste pour vendre vite). Les ventes réelles prendront le relais. `
+        : `Peu d'annonces similaires : estimation à partir de toute la recherche. `) +
     `Ajustée à l'état (${condFactor(item.status)}). Coût = total acheteur + ${eur(S.settings.shipping)} d'envoi.`));
 }
 
@@ -783,6 +814,7 @@ function renderMonitorStatus(f) {
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
   if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API' }[r.via] || r.via));
+  if (r.lag > 3 * 60000 && !r.err) s.append(el('span', 'err', `dernière annonce : il y a ${Math.round(r.lag / 60000)} min`));
   if (r.err) s.append(el('span', 'err', r.err));
 }
 
@@ -934,7 +966,8 @@ setInterval(() => {
   if (tick++ % 5 === 0) {
     const c = DB.counts();
     $('#soldN').textContent = c.sold; $('#trackN').textContent = c.live;
-    $('#dbInfo').textContent = `${c.sold} ventes réelles connues, ${c.live} annonces en cours de suivi (${c.total} au total). Les données restent dans ton navigateur : exporte-les de temps en temps.`;
+    const k = DB.checks;
+    $('#dbInfo').textContent = `${c.total} annonces connues (servent aux estimations), ${c.sold} ventes réelles, ${c.live} en suivi. Vérifications cette session : ${k.done} (vendues ${k.sold || 0}, supprimées ${k.gone || 0}, en ligne ${k.live || 0}, illisibles ${k.unknown || 0}). Exporte la base de temps en temps.`;
   }
   if (tick % 20 === 0) refreshExt();
   renderCooldown();
