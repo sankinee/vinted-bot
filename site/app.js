@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '3.6' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '3.7' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
 };
-const APP_VERSION = '3.6';
-const EXT_MIN = '3.7.0';
+const APP_VERSION = '3.7';
+const EXT_MIN = '3.8.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -612,7 +612,7 @@ const feed = $('#feed');
 
 function addItem(item, f, isNew) {
   if (S.items.has(item.id)) return;
-  const rec = { item, filterId: f.id, isNew, a: analyse(item, f) };
+  const rec = { item, filterId: f.id, isNew, seenAt: Date.now(), a: analyse(item, f) };
   const c = tpl.cloneNode(true);
   rec.el = c;
   c.dataset.id = item.id;
@@ -622,7 +622,7 @@ function addItem(item, f, isNew) {
   const img = c.querySelector('img');
   img.src = safeUrl(item.photo);
   if (isNew) img.loading = 'eager';
-  c.querySelector('.age').dataset.ts = item.ts || Date.now();
+  c.querySelector('.age').dataset.ts = item.ts || '';
   c.querySelector('.price').textContent = eur(item.price);
   c.querySelector('.total').textContent = `${eur(buyerTotal(item))} TTC`;
   const t = c.querySelector('.title'); t.textContent = item.title; t.title = item.title;
@@ -653,6 +653,7 @@ function paintEst(rec) {
 }
 
 function paintAge(e) {
+  if (!e.dataset.ts) { e.textContent = 'date ?'; e.title = 'Vinted n’a pas fourni la date de publication'; return; }
   const s = Math.max(0, (Date.now() - Number(e.dataset.ts)) / 1000);
   e.textContent = s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`;
 }
@@ -927,6 +928,28 @@ for (const form of [$('#settings'), $('#abForm')]) {
     renderAbState();
   });
 }
+
+// Diagnostic : tout ce qu'il faut pour comprendre un problème (sans cookies ni données personnelles).
+on('#diagExport', 'click', async () => {
+  const ext = S.bridge ? await Bridge.call({ type: 'debug' }, 5000) : null;
+  const { webhook, ...settings } = S.settings;
+  const now = Date.now();
+  const data = {
+    v: APP_VERSION, at: new Date().toISOString(), ext, settings,
+    monitors: S.filters.map((f) => { const r = rt(f); return { name: f.name, domain: f.domain, params: f.params, enabled: f.enabled, ab: f.ab, via: r.via, err: r.err, lagMin: r.lag ? +(r.lag / 60000).toFixed(1) : null, prices: r.prices.length, found: r.found, median: (statsFor(f) || {}).med }; }),
+    feed: [...S.items.values()].slice(-40).map(({ item, isNew, seenAt, a }) => ({
+      id: item.id, title: item.title, price: item.price, total: item.total, brand: item.brand, size: item.size, status: item.status,
+      publishedMinAgo: item.ts ? +((now - item.ts) / 60000).toFixed(1) : null, seenMinAgo: +((now - seenAt) / 60000).toFixed(1), isNew,
+      est: a && { src: a.src, n: a.n, resale: a.resale, profit: +a.profit.toFixed(2), deal: a.deal },
+    })),
+    db: { ...DB.counts(), checks: DB.checks },
+    autobuyLog: AB.log.slice(0, 10).map(({ title, status, reason, total, ms }) => ({ title, status, reason, total, ms })),
+  };
+  const el2 = el('a'); el2.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
+  el2.download = `flipdar-diagnostic-${new Date().toISOString().slice(0, 16).replace(':', 'h')}.json`; el2.click();
+  setTimeout(() => URL.revokeObjectURL(el2.href), 1000);
+  toast('Diagnostic téléchargé : envoie ce fichier à Claude.');
+});
 
 // Base de ventes : export / import
 on('#dbExport', 'click', () => {

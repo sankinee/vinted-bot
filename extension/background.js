@@ -6,6 +6,13 @@
 
 const DOMAIN_RE = /^vinted\.(fr|be|es|it|de|nl|pl|pt|lu|at|co\.uk|cz|lt|sk|se|fi|dk|hu|ro|hr|gr|ie|com)$/;
 const refreshing = new Map();
+let lastRaw = null; // dernier échantillon brut reçu de Vinted (diagnostic)
+function trimForDebug(v, depth = 0) {
+  if (v == null || typeof v !== 'object') return typeof v === 'string' && v.length > 120 ? v.slice(0, 120) + '…' : v;
+  if (depth > 3) return Array.isArray(v) ? `[${v.length}]` : '{…}';
+  if (Array.isArray(v)) return v.slice(0, 2).map((x) => trimForDebug(x, depth + 1));
+  const o = {}; for (const k of Object.keys(v).slice(0, 60)) o[k] = trimForDebug(v[k], depth + 1); return o;
+}
 
 /* ------------------------------------------------------------------ Limiteur global anti-blocage
    TOUTES les requêtes vers Vinted passent ici, quel que soit le nombre d'onglets Flipdar :
@@ -246,12 +253,30 @@ function money(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Date de publication : Vinted l'expose sous différents noms selon les pages.
+function toMs(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return v > 1e12 ? v : v > 1e9 ? v * 1000 : null;
+  if (typeof v === 'string') { if (/^\d{10,13}$/.test(v)) return toMs(Number(v)); const t = Date.parse(v); return Number.isFinite(t) ? t : null; }
+  return null;
+}
+function tsOf(i, ph) {
+  const cands = [
+    ph && ph.high_resolution && ph.high_resolution.timestamp,
+    i.created_at_ts, i.created_at, i.item_created_at, i.published_at, i.listed_at,
+    Array.isArray(i.photos) && i.photos[0] && i.photos[0].high_resolution && i.photos[0].high_resolution.timestamp,
+    ph && ph.created_at,
+  ];
+  for (const c of cands) { const t = toMs(c); if (t && t > 1.3e12 && t < Date.now() + 3600000) return t; }
+  return null;
+}
+
 const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? String(v.title || v.name || '') : '');
 
 function slim(i, domain) {
   const ph = i.photo || (Array.isArray(i.photos) && i.photos[0]) || {};
   const thumb = (ph.thumbnails || []).find((t) => t.type === 'thumb310x430') || (ph.thumbnails || [])[0];
-  const ts = ph.high_resolution && ph.high_resolution.timestamp;
+  const ts = tsOf(i, ph);
   return {
     id: i.id,
     title: txt(i.title),
@@ -264,7 +289,7 @@ function slim(i, domain) {
     status: txt(i.status),
     url: !i.url ? `https://www.${domain}/items/${i.id}` : i.url.startsWith('/') ? `https://www.${domain}${i.url}` : i.url,
     photo: (thumb && thumb.url) || ph.url || '',
-    ts: ts ? ts * 1000 : null,
+    ts,
     user: (i.user && i.user.login) || '',
     favs: i.favourite_count || 0,
     views: i.view_count || 0,
@@ -449,6 +474,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], rl: { until: RL.until, strikes: RL.strikes, perMin: RL.times.length }, rscOff, lastRaw };
   if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
@@ -463,6 +489,10 @@ async function handle(msg, sender) {
   if (msg.type === 'search') {
     const res = await search(domain, new URLSearchParams(String(msg.query || '')).toString());
     if (!res.ok) return res;
+    // Échantillon brut pour le diagnostic (annonces publiques, sans l'objet vendeur).
+    lastRaw = { at: Date.now(), via: res.via, count: (res.data.items || []).length,
+      keys: Object.keys((res.data.items || [])[0] || {}),
+      sample: (res.data.items || []).slice(0, 3).map((x) => { const { user, ...rest } = x; return trimForDebug(rest); }) };
     return { ok: true, status: res.status, ms: res.ms, via: res.via, items: (res.data.items || []).map((i) => slim(i, domain)) };
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
