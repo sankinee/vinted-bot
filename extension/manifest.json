@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flipdar Bridge",
-  "version": "4.4.0",
+  "version": "5.0.0",
   "description": "Pont Flipdar ⇄ Vinted : recherche, suivi des ventes et achat automatique (avec limites).",
   "permissions": [
     "storage",
@@ -109,6 +109,37 @@
         "relay.js"
       ],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.vinted.fr/*",
+        "https://*.vinted.be/*",
+        "https://*.vinted.es/*",
+        "https://*.vinted.it/*",
+        "https://*.vinted.de/*",
+        "https://*.vinted.nl/*",
+        "https://*.vinted.pl/*",
+        "https://*.vinted.pt/*",
+        "https://*.vinted.lu/*",
+        "https://*.vinted.at/*",
+        "https://*.vinted.co.uk/*",
+        "https://*.vinted.cz/*",
+        "https://*.vinted.lt/*",
+        "https://*.vinted.sk/*",
+        "https://*.vinted.se/*",
+        "https://*.vinted.fi/*",
+        "https://*.vinted.dk/*",
+        "https://*.vinted.hu/*",
+        "https://*.vinted.ro/*",
+        "https://*.vinted.hr/*",
+        "https://*.vinted.gr/*",
+        "https://*.vinted.ie/*",
+        "https://*.vinted.com/*"
+      ],
+      "js": [
+        "worker.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "action": {

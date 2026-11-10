@@ -24,7 +24,7 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   await p.waitForTimeout(4000);
   const titles = await p.$$eval('.card .title', (t) => t.map((x) => x.textContent));
   assert(titles.length >= 8 && titles.every((t) => /Ralph Lauren/.test(t)), `résultats pertinents (${titles.length} annonces Ralph Lauren)`);
-  assert(/flux rapide|page/.test(await p.textContent('.mon .s')), 'source : page Vinted (pas une API non vérifiée)');
+  assert(/onglet Vinted|flux rapide|page/.test(await p.textContent('.mon .s')), 'source : ' + (await p.textContent('.mon .s')).match(/via [^✓⚠V]*/)[0].trim());
 
   const buyAndWait = async (id, re, timeout = 60000) => {
     await p.click(`.card[data-id="${id}"] .buy`);

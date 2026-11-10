@@ -263,6 +263,135 @@ async function fetchCatalog(url, rsc) {
 }
 const pageError = (r) => ({ ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0, captcha: !!r.captcha });
 
+/* ------------------------------------------------------------------ Onglet moteur (v5)
+   Les recherches partent d'un vrai onglet Vinted (fenêtre réduite), comme celles du site lui-même.
+   Régulièrement, l'onglet recharge la vraie page de résultats (comme un F5) et compare : si la page
+   montre des annonces que la recherche rapide n'a pas, on passe en mode « page réelle ». */
+const WK = { tabId: null, winId: null, domain: null, ready: false, waiters: [], busy: null, mode: 'fetch', modeUntil: 0, fails: 0, offUntil: 0 };
+const FRESH = new Map(); // requête -> { at, ok, newer, mode }
+const QSTATE = new Map(); // requête -> { maxId, lastNewAt }
+const wkReady = chrome.storage.session.get('wk').then(({ wk }) => { if (wk) Object.assign(WK, { tabId: wk.tabId, winId: wk.winId, domain: wk.domain }); }).catch(() => {});
+const saveWK = () => chrome.storage.session.set({ wk: { tabId: WK.tabId, winId: WK.winId, domain: WK.domain } }).catch(() => {});
+function setReady() { WK.ready = true; const w = WK.waiters; WK.waiters = []; w.forEach((f) => f(true)); }
+const waitReady = (ms) => (WK.ready ? Promise.resolve(true) : new Promise((res) => { WK.waiters.push(res); setTimeout(() => res(WK.ready), ms); }));
+
+async function ensureWorker(domain) {
+  await wkReady;
+  if (Date.now() < WK.offUntil) return false;
+  if (WK.tabId != null) {
+    const t = await chrome.tabs.get(WK.tabId).catch(() => null);
+    if (t && WK.domain === domain && !t.discarded) {
+      if (WK.ready) return true;
+      const ping = await sendWorker({ type: 'wping' }, 3000);
+      if (ping && ping.ok) { WK.ready = true; return true; }
+      if (await waitReady(8000)) return true;
+    }
+    if (t) chrome.tabs.remove(t.id).catch(() => {});
+  }
+  // Nouvelle fenêtre Vinted réduite, hors de ta vue.
+  WK.ready = false; WK.domain = domain;
+  try {
+    const win = await chrome.windows.create({ url: `https://www.${domain}/catalog?order=newest_first`, state: 'minimized', focused: false });
+    WK.winId = win.id; WK.tabId = win.tabs[0].id;
+    chrome.tabs.update(WK.tabId, { muted: true, autoDiscardable: false }).catch(() => {});
+  } catch {
+    const tab = await chrome.tabs.create({ url: `https://www.${domain}/catalog?order=newest_first`, active: false, pinned: true });
+    WK.winId = null; WK.tabId = tab.id;
+    chrome.tabs.update(WK.tabId, { muted: true, autoDiscardable: false }).catch(() => {});
+  }
+  saveWK();
+  if (await waitReady(25000)) { WK.fails = 0; return true; }
+  if (++WK.fails >= 3) WK.offUntil = Date.now() + 10 * 60000; // l'onglet ne répond pas : repli sans onglet
+  return false;
+}
+function sendWorker(msg, ms = 20000) {
+  return new Promise((res) => {
+    const t = setTimeout(() => res(null), ms);
+    chrome.tabs.sendMessage(WK.tabId, msg).then((r) => { clearTimeout(t); res(r || null); }, () => { clearTimeout(t); res(null); });
+  });
+}
+const LIMIT_RE = /you are rate limited|too many requests|access to this site is blocked/i;
+const CAPTCHA_RE = /captcha-delivery\.com|geo\.captcha|datadome|dd_cookie_test|please enable js and disable any ad blocker/i;
+function checkBlocked(status, text) {
+  const head = (text || '').slice(0, 30000);
+  if (status === 429 || LIMIT_RE.test(head)) { tripRateLimit(); return { ok: false, status: 429, retryAfter: Math.ceil(cooldownLeft() / 1000) }; }
+  if (CAPTCHA_RE.test(head) && head.length < 25000) { RL.captchaAt = Date.now(); RL.until = Math.max(RL.until, Date.now() + 2 * 60000); return { ok: false, status: 403, captcha: true }; }
+  return null;
+}
+// Recherche rapide depuis l'onglet Vinted.
+async function workerFetch(url, rsc) {
+  if (!(await gate())) return { ok: false, status: 429, retryAfter: Math.ceil(cooldownLeft() / 1000) };
+  const r = await sendWorker({ type: 'wfetch', url, rsc });
+  if (!r) { WK.ready = false; return null; }
+  const blocked = checkBlocked(r.status, r.text); if (blocked) return blocked;
+  if (!r.ok) return { ok: false, status: r.status, retryAfter: r.retryAfter };
+  const isRsc = /x-component/.test(r.ct);
+  const corpus = isRsc ? r.text : pageCorpus(r.text);
+  return { ok: true, status: r.status, rsc: isRsc, corpus, items: extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id) };
+}
+// Vraie page chargée dans l'onglet (comme un F5) : référence de ce que Vinted affiche.
+async function workerNav(url) {
+  if (!(await gate())) return { ok: false, status: 429, retryAfter: Math.ceil(cooldownLeft() / 1000) };
+  RL.times.push(Date.now(), Date.now()); // une page complète déclenche d'autres requêtes : elle compte triple
+  WK.ready = false;
+  const asked = await sendWorker({ type: 'wnav', url }, 3000);
+  if (!asked) await chrome.tabs.update(WK.tabId, { url }).catch(() => {}); // onglet muet : rechargement direct
+  if (!(await waitReady(25000))) return null;
+  const snap = await sendWorker({ type: 'wsnapshot' }, 10000);
+  if (!snap || !snap.html) return null;
+  const blocked = checkBlocked(200, snap.html); if (blocked) return blocked;
+  const corpus = pageCorpus(snap.html);
+  return { ok: true, status: 200, rsc: false, nav: true, corpus, items: extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id) };
+}
+
+async function workerSearch(domain, query) {
+  if (!(await ensureWorker(domain))) return null;
+  while (WK.busy) await WK.busy; // une seule opération à la fois dans l'onglet
+  let release; WK.busy = new Promise((r) => (release = r));
+  try {
+    const p = new URLSearchParams(query);
+    for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
+    p.delete('per_page');
+    const qKey = p.toString();
+    p.set('time', String(Math.floor(Date.now() / 1000)));
+    const url = `https://www.${domain}/catalog?${p}`;
+    const t0 = Date.now();
+    if (WK.mode === 'nav' && Date.now() > WK.modeUntil) WK.mode = 'fetch';
+    const fr = FRESH.get(qKey);
+    const qs = QSTATE.get(qKey) || { maxId: 0, lastNewAt: Date.now() };
+    // Vérifie sur la vraie page : au début, puis toutes les 10 min ; et dès 2 min sans aucune
+    // nouvelle annonce (une recherche figée se voit à ça).
+    const quiet = Date.now() - qs.lastNewAt > 2 * 60000;
+    const verifyDue = !fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000);
+
+    let res;
+    if (WK.mode === 'nav' && !verifyDue) res = await workerNav(url);
+    else {
+      res = await workerFetch(url, rscOn());
+      if (res && res.ok && !res.items.length && res.rsc) { const c = await workerFetch(url, false); if (c && c.ok && c.items.length) res = c; }
+      if (res && res.ok && verifyDue) {
+        // Vérification : la vraie page montre-t-elle des annonces plus récentes ?
+        const maxA = res.items.reduce((m, i) => Math.max(m, i.id), 0);
+        const nav = await workerNav(url);
+        if (nav && nav.ok) {
+          const newer = nav.items.filter((i) => i.id > maxA).length;
+          const stale = newer >= 2 || (newer >= 1 && !res.items.length);
+          FRESH.set(qKey, { at: Date.now(), ok: !stale, newer });
+          if (stale) { WK.mode = 'nav'; WK.modeUntil = Date.now() + 30 * 60000; res = nav; }
+          else if (WK.mode === 'nav') WK.mode = 'fetch';
+        }
+      }
+    }
+    if (!res) return null;
+    if (!res.ok) return res;
+    const top = res.items.reduce((m, i) => Math.max(m, i.id), 0);
+    if (top > qs.maxId) { if (qs.maxId) qs.lastNewAt = Date.now(); qs.maxId = top; }
+    QSTATE.set(qKey, qs);
+    const f = FRESH.get(qKey);
+    return { ok: true, status: res.status, ms: Date.now() - t0, data: { items: res.items }, via: res.nav ? 'nav' : res.rsc ? 'tab-rsc' : 'tab-page', fresh: f ? { ok: f.ok, at: f.at, newer: f.newer, mode: WK.mode } : null };
+  } finally { WK.busy = null; release(); }
+}
+
 async function searchHtml(domain, query) {
   const p = new URLSearchParams(query);
   for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
@@ -298,7 +427,9 @@ async function search(domain, query) {
     dead.add(EP.search); saveDead(); EP.search = null; saveEP(); syncLearner();
   }
   maybeDiscover(domain); // non bloquant
-  return searchHtml(domain, query);
+  const w = await workerSearch(domain, query).catch(() => null);
+  if (w) return w;
+  return searchHtml(domain, query); // repli : requête directe de l'extension
 }
 
 /* ------------------------------------------------------------------ Config achat auto */
@@ -605,7 +736,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rscOffUntil, rscFails, rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, lastRaw };
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rscOffUntil, rscFails, worker: { tabId: WK.tabId, ready: WK.ready, mode: WK.mode, fails: WK.fails, offUntil: WK.offUntil }, fresh: [...FRESH.entries()], rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, lastRaw };
   if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), cap: capNow(), perMin: RL.times.filter((t) => Date.now() - t < 60000).length, captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
@@ -624,7 +755,7 @@ async function handle(msg, sender) {
     lastRaw = { at: Date.now(), via: res.via, count: (res.data.items || []).length,
       keys: Object.keys((res.data.items || [])[0] || {}),
       sample: (res.data.items || []).slice(0, 3).map((x) => { const { user, ...rest } = x; return trimForDebug(rest); }) };
-    return { ok: true, status: res.status, ms: res.ms, via: res.via, items: (res.data.items || []).map((i) => slim(i, domain)) };
+    return { ok: true, status: res.status, ms: res.ms, via: res.via, fresh: res.fresh || null, items: (res.data.items || []).map((i) => slim(i, domain)) };
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id), !!msg.wantTs);
   if (msg.type === 'autobuy') return autobuy(msg, origin, sender.tab && sender.tab.id);
@@ -651,6 +782,8 @@ async function handle(msg, sender) {
 
 chrome.runtime.onMessage.addListener((msg, sender, send) => {
   if (msg && ['job?', 'jobPhase', 'jobResult', 'manualDone'].includes(msg.type)) { onCheckoutMessage(msg, sender, send); return false; }
+  if (msg && msg.type === 'worker?') { wkReady.then(() => send(!!sender.tab && sender.tab.id === WK.tabId)); return true; }
+  if (msg && msg.type === 'workerReady') { if (sender.tab && sender.tab.id === WK.tabId) setReady(); return false; }
   if (msg && msg.type === 'learn') { learn(msg.kind, msg.url, sender.url || ''); return false; }
   if (msg && msg.type === 'survey') { addSurvey(msg.e || {}, sender.url || ''); return false; }
   handle(msg, sender).then(send, (e) => send({ ok: false, status: 0, error: String((e && e.message) || e) }));
@@ -658,6 +791,7 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabId === WK.tabId) { WK.tabId = null; WK.ready = false; saveWK(); }
   manualTabs.delete(tabId);
   const job = jobs.get(tabId);
   if (job) finish(job, { ok: false, status: 'error', reason: 'Onglet de paiement fermé' });

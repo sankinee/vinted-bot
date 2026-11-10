@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '4.4' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '5.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
 };
-const APP_VERSION = '4.4';
-const EXT_MIN = '4.4.0';
+const APP_VERSION = '5.0';
+const EXT_MIN = '5.0.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -644,7 +644,7 @@ async function poll(f, src) {
     r.nextAt = Date.now() + r.backoff;
     return;
   }
-  r.backoff = 0; r.err = ''; r.via = res.via || '';
+  r.backoff = 0; r.err = ''; r.via = res.via || ''; if (res.fresh) r.fresh = res.fresh;
   S.stats.lat.push(res.ms || ms); if (S.stats.lat.length > 30) S.stats.lat.shift();
 
   const items = res.items || [];
@@ -669,7 +669,8 @@ async function poll(f, src) {
   // Retard de Vinted : âge de l'annonce la plus récente renvoyée.
   const newest = items.reduce((m, i) => Math.max(m, i.ts || 0), 0);
   r.lag = newest ? Date.now() - newest : 0;
-  const iv = S.settings.sniper ? 5 : Math.max(1, S.settings.interval);
+  let iv = S.settings.sniper ? 5 : Math.max(1, S.settings.interval);
+  if (r.via === 'nav') iv = Math.max(iv, 8); // page réelle (plus lourde) : au moins 8 s
   r.nextAt = Date.now() + iv * 1000 * (S.settings.sniper ? 0.9 + Math.random() * 0.2 : 0.8 + Math.random() * 0.4);
 }
 
@@ -1075,7 +1076,11 @@ function renderMonitorStatus(f) {
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
   if (S.settings.sniper) s.append(el('span', '', '🎯 Sniper 5 s'));
-  if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API' }[r.via] || r.via));
+  if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API', 'tab-rsc': 'via onglet Vinted', 'tab-page': 'via onglet Vinted', nav: 'via page réelle (F5)' }[r.via] || r.via));
+  if (r.fresh) {
+    const ago = fmtAge(Date.now() - r.fresh.at);
+    s.append(r.fresh.ok ? el('span', 'ok', `✓ identique à Vinted (vérifié il y a ${ago})`) : el('span', 'err', `⚠ recherche rapide en retard de ${r.fresh.newer} annonce(s) : mode page réelle (vérifié il y a ${ago})`));
+  }
   if (r.delays && r.delays.length >= 3) {
     const d = [...r.delays].sort((x, y) => x - y)[Math.floor(r.delays.length / 2)];
     s.append(el('span', d > 5 * 60000 ? 'err' : '', `Vinted affiche les annonces ~${fmtAge(d)} après publication`));

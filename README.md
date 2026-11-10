@@ -11,12 +11,13 @@ Interface web (hébergée gratuitement sur GitHub Pages) pour l'achat-revente su
 ## Comment ça marche
 
 ```
-GitHub Pages (site/)  ⇄  extension « Flipdar Bridge » (extension/)  ⇄  API Vinted
+GitHub Pages (site/)  ⇄  extension « Flipdar Bridge » (extension/)  ⇄  onglet Vinted réduit  ⇄  Vinted
 ```
 
-Une page GitHub Pages ne peut pas appeler Vinted directement (CORS + protection anti-bot).
-La petite extension Chrome sert de pont : elle fait les requêtes **depuis ton navigateur, avec ta session Vinted et ton IP**. Pas de serveur à payer, et une latence minimale.
-L'extension n'autorise que la recherche catalogue (lecture seule) : aucune page ne peut acheter ou écrire à ta place.
+- Le site ne peut pas appeler Vinted directement : l'extension sert de pont, avec **ta** session Vinted et **ton** adresse internet.
+- **Moteur de recherche v5** : l'extension garde un onglet Vinted dans une fenêtre réduite. Les recherches partent de cette page, exactement comme celles du site Vinted (même origine, mêmes cookies). Ne ferme pas cette fenêtre (elle se recrée sinon).
+- **Vérification automatique** : au début, toutes les 10 min, et dès 2 min sans nouvelle annonce, l'onglet recharge la vraie page de résultats (comme un F5) et la compare à la recherche rapide. Si Vinted montre des annonces que Flipdar n'a pas, Flipdar passe en mode **page réelle**. Sous chaque recherche : « ✓ identique à Vinted » ou « ⚠ … mode page réelle ».
+- Limiteur anti-blocage : 15 requêtes/min au maximum (plafond qui baisse après un blocage), pause automatique si Vinted répond « rate limited ».
 
 ## Mise en ligne
 

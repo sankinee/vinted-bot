@@ -45,6 +45,7 @@ for (const it of items.values()) { if (it.createdAt < t0 - 3600000 && ((it.id * 
 setInterval(() => { makeItem(Date.now()); if (Math.random() < 0.5) makeItem(Date.now()); }, 4000);
 
 const STATE = { rateLimited: false, requests: [] };
+const STALE = new Map();
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const slug = (it) => `${it.id}-${it.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 function apiItem(it, host) {
@@ -124,7 +125,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     if (u.pathname === '/__mock/ages') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = +((Date.now() - it.createdAt + ADDED_OFFSET) / 60000).toFixed(1); } return send(res, 200, 'application/json', JSON.stringify(out)); }
     if (u.pathname === '/__mock/item') { const it = [...items.values()].find((i) => !i.sold && i.createdAt < Date.now() - 60000 && i.brand === (u.searchParams.get('brand') || 'Ralph Lauren')); return send(res, 200, 'application/json', JSON.stringify(it)); }
   }
-  STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1' });
+  STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1', site: req.headers['sec-fetch-site'] || '' });
   if (u.pathname.startsWith('/__img/')) return send(res, 200, 'image/svg+xml', svg(parseInt((u.pathname.match(/\d{6,}/) || ['0'])[0], 10)));
   if (STATE.rateLimited) return send(res, 429, 'text/html', '<h1>You are rate limited</h1><p>access to this site is blocked for this computer, due to too many requests.</p>');
 
@@ -143,7 +144,17 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     return send(res, 200, 'application/json', JSON.stringify({ items: list }));
   }
   if (u.pathname === '/catalog') {
-    const list = searchItems(u.searchParams).map((i) => apiItem(i, host));
+    // Hypothèse testée : les requêtes qui ne viennent PAS d'une page Vinted (extension) reçoivent
+    // des résultats mis en cache (figés) ; celles d'une page Vinted (same-origin) sont fraîches.
+    const staleMs = Number(process.env.MOCK_STALE_EXT || 0);
+    let found;
+    const staleRsc = process.env.MOCK_STALE_RSC === '1' && req.headers.rsc === '1'; // flux rapide figé, page fraîche
+    if ((staleMs && req.headers['sec-fetch-site'] !== 'same-origin') || staleRsc) {
+      const k = [...u.searchParams].filter(([k]) => k !== 'time').map((e) => e.join('=')).sort().join('&');
+      const c = STALE.get(k);
+      if (c && Date.now() - c.at < (staleMs || 1800000)) found = c.list; else { found = searchItems(u.searchParams); STALE.set(k, { at: Date.now(), list: found }); }
+    } else found = searchItems(u.searchParams);
+    const list = found.map((i) => apiItem(i, host));
     if (req.headers.rsc === '1') return send(res, 200, 'text/x-component', flight(process.env.MOCK_RSC_BROKEN === '1' ? { banners: [] } : { items: list }));
     return send(res, 200, 'text/html; charset=utf-8', htmlWithFlight({ items: list }, '<main>Catalogue</main>'));
   }
