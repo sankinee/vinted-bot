@@ -1,46 +1,63 @@
-# Vinted Discord BOT
+# Flipdar — moniteur Vinted temps réel
 
-Un bot Discord pour Vinted, qui envoie un message lorsqu'une nouvelle annonce est publiée (selon certains critères).
+Interface web (hébergée gratuitement sur GitHub Pages) pour l'achat-revente sur Vinted :
 
-## Distrobot.fr
+- **Moniteurs en temps réel** : colle un lien de recherche Vinted (avec tous tes filtres) ou des mots-clés. Les nouvelles annonces apparaissent en quelques secondes.
+- **⚡ Achat en un clic** : le bouton ouvre directement la page de paiement Vinted de l'article. Raccourci `B` = acheter le dernier article affiché.
+- **Achat automatique** : règles par moniteur (prix max, profit min, remise min). L'extension ouvre le vrai tunnel de paiement Vinted, revérifie le total, puis clique « Payer ». Mode **simulation** activé par défaut.
+- **Estimation sur prix VENDUS** : chaque annonce vue est suivie, puis sa page est revérifiée (30 min, 2 h, 6 h… jusqu'à 14 j). Quand elle passe « vendue », Flipdar enregistre le prix final et le délai de vente. L'estimation utilise ces ventes réelles (même marque + mots du titre, ajustées à l'état) et repasse sur les prix demandés tant qu'il n'y en a pas assez.
+- Son, notifications bureau, webhook Discord pour les bonnes affaires, multi-pays (FR, BE, ES, IT, DE…).
 
-Bien que le bot open source fonctionne parfaitement et soit très rapide, sa configuration et son installation peut être laborieuse. C'est pour cela que nous vous proposons également notre service https://distrobot.fr :
+## Comment ça marche
 
-|                                             | **Bot open source** | **Distrobot** |
-|---------------------------------------------|---------------------|---------------|
-| Prix                                          | Gratuit                   |  à partir de 9.90€/mois             |
-| Mises à jour régulières                     | ✅                   | ✅             |
-| Recherches avancées                         | ✅                   | ✅             |
-| Vitesse de synchronisation                  | 15s                 | < 5s            |
-| En ligne 24/24 7/7                          |  ❌  (sauf VPS payant)                | ✅             |
-| Utilisation de proxies (pour + de rapidité) |   ❌                  | ✅             |
-| Configuration en 3 clics                    |   ❌                  | ✅             |
-| Salons avec conseils de professionnels      |   ❌                  | ✅             |
-| Soutien du projet                           |  ❌                   | ✅             |
+```
+GitHub Pages (site/)  ⇄  extension « Flipdar Bridge » (extension/)  ⇄  API Vinted
+```
 
-[![banner](./banner.png)](https://distrobot.fr)
+Une page GitHub Pages ne peut pas appeler Vinted directement (CORS + protection anti-bot).
+La petite extension Chrome sert de pont : elle fait les requêtes **depuis ton navigateur, avec ta session Vinted et ton IP**. Pas de serveur à payer, et une latence minimale.
+L'extension n'autorise que la recherche catalogue (lecture seule) : aucune page ne peut acheter ou écrire à ta place.
 
-## Abonnez-vous...
+## Mise en ligne
 
-Pour s'abonner, entrez n'importe quelle URL Vinted. Le bot déterminera automatiquement les filtres à appliquer aux résultats.
+1. Crée un dépôt GitHub et pousse ce dossier sur la branche `main`.
+2. Dans le dépôt : **Settings → Pages → Source : GitHub Actions**.
+3. Le workflow publie le site sur `https://<ton-pseudo>.github.io/<dépôt>/` et y met l'extension en téléchargement (`flipdar-extension.zip`).
 
-![abo](./examples/abonner.png)
+## Installer l'extension
 
-## ...et recevez vos notifications !
+1. Télécharge `flipdar-extension.zip` depuis ton site (ou utilise le dossier `extension/`) et dézippe-le.
+2. Chrome / Edge / Brave : `chrome://extensions` → *Mode développeur* → *Charger l'extension non empaquetée* → choisis le dossier.
+3. Connecte-toi sur vinted.fr dans le même navigateur, puis recharge Flipdar : le statut passe à **Connecté**.
 
-![notif](./examples/notif.png)
+Test en local : `python3 -m http.server -d site 8000` puis http://localhost:8000.
 
-## Installation
+## Achat automatique
 
-**Je maintiens bénévolement ce bot sur mon temps libre. Pour supporter ce projet, n'hésitez pas à [faire un don](https://paypal.com/andr0z). Si besoin, je suis également disponible pour aider pour l'installation sur [Twitter](https://twitter.com/androz2091) si besoin.**
+Trois verrous, tous nécessaires :
+1. **Popup de l'extension** (icône Flipdar Bridge) : activer l'achat auto, cliquer « Autoriser ce site » depuis ton site Flipdar, fixer max/article, budget/jour, achats/jour. Ces plafonds sont appliqués par l'extension elle-même.
+2. **Panneau « Achat automatique »** du site : interrupteur général + simulation (désactive-la seulement quand tout fonctionne).
+3. **Règles par moniteur** : bouton ⚡ dans la liste des moniteurs.
 
-Prérequis :
+Avant de cliquer « Payer », l'extension vérifie que le total affiché (frais + port compris) ne dépasse pas prix TTC + « frais de port max ». Sinon elle annule.
+Prérequis côté Vinted : adresse, mode de livraison et carte déjà enregistrés. Si ta banque demande une validation 3-D Secure, l'onglet passe au premier plan pour que tu valides.
 
-* Node.js
-* NPM
+## Base de ventes
 
-Installation :
+Stockée dans ton navigateur (IndexedDB), elle grossit toute seule tant que Flipdar tourne. Plus tu laisses tourner, meilleure est l'estimation.
+Pense à l'**exporter** de temps en temps (bouton dans le panneau), et à l'importer sur un autre PC.
 
-* Installer les dépendances avec `npm install`
-* Renommer le fichier `config.sample.json` en `config.json`
-* Lancer avec `node index.js`
+## Réglages conseillés
+
+- **Intervalle** 3–5 s par moniteur et **écart mini** ≥ 500 ms. En dessous, Vinted renvoie des 429/403 : Flipdar se met alors en pause automatiquement (backoff exponentiel).
+- Toutes les requêtes passent par un seul ordonnanceur : 5 moniteurs à 600 ms d'écart = ~100 requêtes/min au total. Les vérifications de ventes (12/min par défaut) passent dans les temps morts.
+
+### Ce qui limite le risque de ban
+Requêtes depuis ton navigateur et ton IP, avec ta vraie session (aucun serveur ni proxy suspect). Rythme irrégulier (±20 %), pause automatique dès que Vinted renvoie 429/403. Achat via le vrai tunnel de paiement avec un délai humain, un seul à la fois, plafonné par jour. **Aucune garantie** cependant : Vinted peut bannir n'importe quel compte automatisé.
+
+## Limites (à savoir)
+
+- L'automatisation est contraire aux conditions d'utilisation de Vinted : un rythme trop agressif peut faire bloquer ton compte. Reste raisonnable.
+- Les premières heures, l'estimation repose sur les prix demandés : les ventes réelles s'accumulent au fil du suivi.
+- Le script d'achat repère le bouton « Payer » par son texte. Si Vinted refait sa page de paiement, il faudra adapter `extension/checkout.js`. Teste toujours en simulation après une mise à jour de Vinted.
+- L'API Vinted n'est pas officielle et peut changer ; le code d'appel est isolé dans `extension/background.js`.
