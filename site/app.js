@@ -13,8 +13,8 @@ const DEFAULTS = {
   interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.4';
-const EXT_MIN = '2.4.0';
+const APP_VERSION = '2.5';
+const EXT_MIN = '2.5.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -602,7 +602,15 @@ function paintAge(e) {
 
 function buy(id) {
   const rec = S.items.get(id); if (!rec) return;
-  window.open(S.settings.demo ? rec.item.url : buyUrl(itemDomain(rec.item), rec.item.id), '_blank', 'noopener');
+  const { item } = rec;
+  if (S.settings.demo) return window.open(item.url, '_blank', 'noopener');
+  if (S.bridge && S.extVersion && S.extVersion.localeCompare('2.5.0', undefined, { numeric: true }) >= 0) {
+    // L'extension ouvre l'article et clique « Acheter » : on arrive directement sur le paiement.
+    Bridge.call({ type: 'manualBuy', domain: itemDomain(item), itemId: item.id }, 5000)
+      .then((r) => { if (!r || !r.ok) window.open(buyUrl(itemDomain(item), item.id), '_blank', 'noopener'); });
+    return;
+  }
+  window.open(buyUrl(itemDomain(item), item.id), '_blank', 'noopener');
 }
 
 async function deepEstimate(id) {

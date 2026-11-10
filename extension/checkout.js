@@ -23,9 +23,9 @@
   const labelOf = (b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim();
 
   function findBuy() {
-    const byId = [...document.querySelectorAll('[data-testid*="buy" i]')].map((e) => e.closest('button, [role="button"]') || e).find((b) => usable(b) && !inChrome(b));
-    if (byId) return byId;
-    return [...document.querySelectorAll('button, [role="button"]')].find((b) => usable(b) && !inChrome(b) && BUY_RE.test(labelOf(b)));
+    const btns = [...document.querySelectorAll('button, [role="button"]')].filter((b) => usable(b) && !inChrome(b));
+    return btns.find((b) => BUY_RE.test(labelOf(b)))
+      || btns.find((b) => /(^|[-_])buy[-_]?button$|item[-_]buy/i.test(b.getAttribute('data-testid') || '') && !/buyer/i.test(b.getAttribute('data-testid') || ''));
   }
   function findPay() {
     const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((b) => !inChrome(b));
@@ -68,13 +68,16 @@
 
   const job = await ask({ type: 'job?' });
 
-  /* ---------------- Mode manuel : bouton « ⚡ Acheter » de Flipdar ---------------- */
-  if (!job) {
-    if (location.hash === '#flipdar-buy' && ITEM_PAGE.test(location.pathname)) {
-      history.replaceState(null, '', location.pathname + location.search);
-      const b = await waitFor(findBuy, 10000);
-      if (b) b.click();
-    }
+  /* ---------------- Mode manuel : bouton « ⚡ Acheter » de Flipdar ----------------
+     L'onglet a été ouvert par l'extension (ou porte #flipdar-buy) : on clique « Acheter » pour
+     arriver directement sur le paiement. Rien n'est payé automatiquement. */
+  if (!job || job.manual) {
+    const manual = (job && job.manual) || location.hash === '#flipdar-buy';
+    if (!manual || !ITEM_PAGE.test(location.pathname)) return;
+    if (location.hash === '#flipdar-buy') history.replaceState(null, '', location.pathname + location.search);
+    const b = await waitFor(findBuy, 20000);
+    if (job && job.manual) ask({ type: 'manualDone', found: !!b });
+    if (b) { b.scrollIntoView({ block: 'center' }); b.click(); }
     return;
   }
 

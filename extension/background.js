@@ -280,6 +280,7 @@ async function itemStatus(domain, id) {
 
 /* ------------------------------------------------------------------ Achat automatique */
 const jobs = new Map(); // tabId -> job
+const manualTabs = new Map(); // tabId -> { itemId, until } : onglets « ⚡ Acheter » à faire passer au paiement
 let buying = false;
 
 // Envoie l'avancement de l'achat à l'onglet Flipdar (fenêtre de progression).
@@ -344,9 +345,12 @@ async function autobuy(msg, origin, siteTab) {
 function onCheckoutMessage(msg, sender, send) {
   const job = sender.tab && jobs.get(sender.tab.id);
   if (msg.type === 'job?') {
+    const m = sender.tab && manualTabs.get(sender.tab.id);
+    if (!job && m && Date.now() < m.until) return send({ manual: true, itemId: m.itemId });
     send(job && !job.done ? { itemId: job.itemId, maxTotal: job.maxTotal, dryRun: job.dryRun, delay: job.delay, phase: job.phase } : null);
     return;
   }
+  if (msg.type === 'manualDone') { if (sender.tab) manualTabs.delete(sender.tab.id); return send(true); }
   if (!job) return send(null);
   if (msg.type === 'jobPhase') {
     if (msg.phase) job.phase = msg.phase;
@@ -385,6 +389,14 @@ async function handle(msg, sender) {
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
   if (msg.type === 'autobuy') return autobuy(msg, origin, sender.tab && sender.tab.id);
+  if (msg.type === 'manualBuy') {
+    // Ouvre l'article dans un nouvel onglet ; checkout.js y clique « Acheter » (sans payer).
+    const id = Number(msg.itemId);
+    if (!id) return { ok: false, error: 'id invalide' };
+    const tab = await chrome.tabs.create({ url: `https://www.${domain}/items/${id}`, active: true, index: sender.tab ? sender.tab.index + 1 : undefined });
+    manualTabs.set(tab.id, { itemId: id, until: Date.now() + 30000 });
+    return { ok: true };
+  }
   if (msg.type === 'abFocus') {
     for (const j of jobs.values()) if (j.siteTab === (sender.tab && sender.tab.id)) { await chrome.tabs.update(j.tabId, { active: true }); return { ok: true }; }
     return { ok: false };
@@ -400,6 +412,7 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  manualTabs.delete(tabId);
   const job = jobs.get(tabId);
   if (job) finish(job, { ok: false, status: 'error', reason: 'Onglet de paiement fermé' });
 });
