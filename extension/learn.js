@@ -5,8 +5,22 @@
   if (window.__flipdarLearn) return;
   window.__flipdarLearn = true;
   const post = (kind, url) => window.postMessage({ ns: 'flipdar-learn', kind, url }, location.origin);
+  // Relevé pour le diagnostic : chemin (numéros masqués), noms des paramètres et des champs.
+  const survey = (url, d) => {
+    try {
+      const u = new URL(url, location.href);
+      const arr = Array.isArray(d.items) ? d.items : null;
+      const first = arr && arr[0] && typeof arr[0] === 'object' ? arr[0] : null;
+      window.postMessage({ ns: 'flipdar-learn', kind: 'survey', e: {
+        host: u.host, path: u.pathname.replace(/\d{4,}/g, '{n}'), params: [...new Set([...u.searchParams.keys()])].slice(0, 20),
+        keys: Object.keys(d).slice(0, 20), items: arr ? arr.length : null, itemKeys: first ? Object.keys(first).slice(0, 60) : null,
+        photoKeys: first && first.photo && typeof first.photo === 'object' ? Object.keys(first.photo).slice(0, 30) : null,
+      } }, location.origin);
+    } catch { /* rien */ }
+  };
   const inspect = (url, d) => {
     if (!d || typeof d !== 'object') return;
+    survey(url, d);
     const arr = Array.isArray(d.items) ? d.items : null;
     if (arr && arr.length && arr[0] && 'id' in arr[0] && 'title' in arr[0] && 'price' in arr[0]) return post('search', url);
     const it = d.item;

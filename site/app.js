@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '4.2' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '4.3' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -27,10 +27,10 @@ const store = {
 
 const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
-  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120,
+  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
 };
-const APP_VERSION = '4.2';
-const EXT_MIN = '4.2.0';
+const APP_VERSION = '4.3';
+const EXT_MIN = '4.3.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -187,8 +187,15 @@ const TYPE_OF = new Map(); for (const [t, ws] of Object.entries(TYPE_WORDS)) for
 function itemType(title, brand) {
   const bw = new Set(norm(brand).split(/[^a-z0-9]+/));
   const t = norm(title).replace(/t[\s-]?shirt|tee[\s-]shirt/g, 'tshirt').replace(/sweat[\s-]shirt/g, 'sweatshirt').replace(/air[\s-]max/g, 'airmax').replace(/air[\s-]force/g, 'af1');
-  for (const w of t.split(/[^a-z0-9]+/)) { if (bw.has(w) && w !== 'polo') continue; const ty = TYPE_OF.get(w); if (ty) return ty; }
-  return '';
+  const words = t.split(/[^a-z0-9]+/).filter(Boolean);
+  for (const w of words) { if (bw.has(w)) continue; const ty = TYPE_OF.get(w); if (ty) return ty; }
+  // Mots composés (allemand, néerlandais…) : « Wollpullover » → pullover, « Strickjacke » → jacke.
+  for (const w of words) {
+    if (w.length < 7 || bw.has(w)) continue;
+    for (const [tw, ty] of TYPE_OF) if (tw.length >= 4 && w.endsWith(tw)) return ty;
+  }
+  // « Polo » seul (aussi dans « Polo Ralph Lauren ») : c'est un polo s'il n'y a aucun autre type.
+  return words.includes('polo') ? 'polo' : '';
 }
 // Variantes d'une même marque (« Polo Ralph Lauren » = « Ralph Lauren »…).
 const BRAND_ALIAS = [[/ralphlauren|poloralph/, 'ralphlauren'], [/northface/, 'thenorthface'], [/^levis/, 'levis'], [/tommyhilfiger|tommyjeans/, 'tommyhilfiger'], [/^nike/, 'nike'], [/^adidas/, 'adidas']];
@@ -377,10 +384,12 @@ const Clock = {
     return f;
   },
   est(id) {
-    const f = this.fit(); if (!f) return null;
+    const f = this.fit();
+    // Jamais d'âge deviné : l'horloge doit avoir été vérifiée sur au moins 2 vraies dates Vinted.
+    if (!f || f.offset === undefined) return null;
     return Math.min(Date.now(), (id - f.b) / f.rate + (f.offset || 0));
   },
-  ready() { return !!this.fit(); },
+  ready() { const f = this.fit(); return !!f && f.offset !== undefined; },
 };
 
 // Donne une date (réelle ou estimée) à chaque annonce.
@@ -537,7 +546,8 @@ async function scheduler() {
     // Tâches de fond (comparables, horloge, suivi des ventes) : seulement avec les requêtes qui restent
     // une fois les recherches servies, et pas dans les 5 min qui suivent une pause imposée par Vinted.
     const recent = S.stats.reqTimes.filter((t) => now - t < 60000).length;
-    const extras = S.settings.demo || (recent < (S.extCap || 15) - 3 && now > (S.calmUntil || 0));
+    // Mode Sniper : toutes les requêtes vont aux recherches (pas de tâches de fond).
+    const extras = S.settings.demo || (!S.settings.sniper && recent < (S.extCap || 15) - 3 && now > (S.calmUntil || 0));
     // Recherche de comparables pour les estimations (1 / min au plus).
     if (extras && gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
       S.lastReq = now; Comps.next = now + (S.settings.demo ? 15000 : 60000); Comps.run(src); continue;
@@ -563,7 +573,11 @@ async function probeClock(src) {
   try { res = await src.search(f ? f.domain : 'vinted.fr', 'order=newest_first&per_page=48&page=1'); } catch { res = { ok: false }; }
   S.stats.reqTimes.push(Date.now());
   if (!res.ok || !res.items || !res.items.length) return;
-  for (const i of res.items) if (i.ts) Clock.addKnown(i.id, i.ts);
+  for (const i of res.items) if (i.ts && !i.tsEst) Clock.addKnown(i.id, i.ts);
+  // Le fil n'est utilisable que s'il est vraiment trié du plus récent au plus ancien.
+  const ids = res.items.map((i) => i.id).slice(2);
+  let desc = 0; for (let j = 1; j < ids.length; j++) if (ids[j] < ids[j - 1]) desc++;
+  if (ids.length < 10 || desc / (ids.length - 1) < 0.8) { Clock.unsorted = (Clock.unsorted || 0) + 1; return; }
   Clock.addSample(Math.max(...res.items.map((i) => i.id)));
   // Recalage : lit « Ajouté il y a… » sur la page d'une annonce (souvent au début, puis toutes les ~10 min).
   Clock.probes = (Clock.probes || 0) + 1;
@@ -655,7 +669,8 @@ async function poll(f, src) {
   // Retard de Vinted : âge de l'annonce la plus récente renvoyée.
   const newest = items.reduce((m, i) => Math.max(m, i.ts || 0), 0);
   r.lag = newest ? Date.now() - newest : 0;
-  r.nextAt = Date.now() + Math.max(1, S.settings.interval) * 1000 * (0.8 + Math.random() * 0.4);
+  const iv = S.settings.sniper ? 5 : Math.max(1, S.settings.interval);
+  r.nextAt = Date.now() + iv * 1000 * (S.settings.sniper ? 0.9 + Math.random() * 0.2 : 0.8 + Math.random() * 0.4);
 }
 
 /* ================================================================== Achat automatique */
@@ -877,7 +892,7 @@ function paintAge(e) {
   if (e.dataset.seen) { // nouvelle annonce : temps écoulé depuis son apparition dans la recherche
     e.textContent = `vu ${fmtAge(now - Number(e.dataset.seen))}`;
     e.title = 'Apparue dans la recherche Vinted il y a ' + fmtAge(now - Number(e.dataset.seen));
-  } else if (!e.dataset.ts) { e.textContent = 'date…'; e.title = 'Âge en cours de calcul (horloge Vinted en calibrage, ~5 min la 1re fois)'; }
+  } else if (!e.dataset.ts) { e.textContent = 'âge ?'; e.title = 'Vinted ne fournit pas la date de cette annonce (âge affiché seulement s’il est vérifié)'; }
   else {
     e.title = e.dataset.est ? 'Âge estimé (horloge Vinted)' : 'Date de publication';
     e.textContent = (e.dataset.est ? '~' : '') + fmtAge(now - Number(e.dataset.ts));
@@ -1059,6 +1074,7 @@ function renderMonitorStatus(f) {
   s.replaceChildren(el('span', '', f.domain.replace('vinted.', '').toUpperCase()), el('span', '', `${r.found} trouvés`),
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
+  if (S.settings.sniper) s.append(el('span', '', '🎯 Sniper 5 s'));
   if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API' }[r.via] || r.via));
   if (r.delays && r.delays.length >= 3) {
     const d = [...r.delays].sort((x, y) => x - y)[Math.floor(r.delays.length / 2)];
@@ -1187,10 +1203,12 @@ on('#diagExport', 'click', async () => {
     monitors: S.filters.map((f) => { const r = rt(f); return { name: f.name, domain: f.domain, params: f.params, enabled: f.enabled, ab: f.ab, via: r.via, err: r.err, lagMin: r.lag ? +(r.lag / 60000).toFixed(1) : null, prices: r.prices.length, found: r.found, median: (statsFor(f) || {}).med }; }),
     feed: [...S.items.values()].slice(-40).map(({ item, isNew, seenAt, a }) => ({
       id: item.id, title: item.title, price: item.price, total: item.total, brand: item.brand, size: item.size, status: item.status,
-      publishedMinAgo: item.ts ? +((now - item.ts) / 60000).toFixed(1) : null, seenMinAgo: +((now - seenAt) / 60000).toFixed(1), isNew,
+      publishedMinAgo: item.ts ? +((now - item.ts) / 60000).toFixed(1) : null, dateSrc: item.tsEst ? 'horloge' : item.tsSrc || (item.ts ? 'data' : null), seenMinAgo: +((now - seenAt) / 60000).toFixed(1), isNew,
       est: a && { src: a.src, n: a.n, resale: a.resale, profit: +a.profit.toFixed(2), deal: a.deal },
     })),
     db: { ...DB.counts(), checks: DB.checks },
+    clock: { samples: Clock.samples.length, known: Clock.known.length, unsorted: Clock.unsorted || 0, fit: Clock.fit(), ready: Clock.ready() },
+    dates: [...S.items.values()].reduce((m, { item }) => { const k = item.tsEst ? 'horloge' : item.tsSrc || (item.ts ? 'data' : 'aucune'); m[k] = (m[k] || 0) + 1; return m; }, {}),
     autobuyLog: AB.log.slice(0, 10).map(({ title, status, reason, total, ms }) => ({ title, status, reason, total, ms })),
   };
   const el2 = el('a'); el2.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));

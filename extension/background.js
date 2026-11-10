@@ -8,7 +8,7 @@ const DOMAIN_RE = /^vinted\.(fr|be|es|it|de|nl|pl|pt|lu|at|co\.uk|cz|lt|sk|se|fi
 const refreshing = new Map();
 let lastRaw = null; // dernier échantillon brut reçu de Vinted (diagnostic)
 function trimForDebug(v, depth = 0) {
-  if (v == null || typeof v !== 'object') return typeof v === 'string' && v.length > 120 ? v.slice(0, 120) + '…' : v;
+  if (v == null || typeof v !== 'object') return typeof v === 'string' && v.length > 300 ? v.slice(0, 300) + '…' : v;
   if (depth > 3) return Array.isArray(v) ? `[${v.length}]` : '{…}';
   if (Array.isArray(v)) return v.slice(0, 2).map((x) => trimForDebug(x, depth + 1));
   const o = {}; for (const k of Object.keys(v).slice(0, 60)) o[k] = trimForDebug(v[k], depth + 1); return o;
@@ -99,6 +99,17 @@ function toTemplate(url, kind) {
   let path = u.pathname;
   if (kind === 'item') path = path.replace(/\/\d{5,}(?=\/|$)/, '/{id}');
   return `${u.protocol}//${u.host.replace(DOM_IN_HOST, '{d}')}${path}`;
+}
+
+// Relevé des adresses JSON qu'utilise le site Vinted (pour le diagnostic) : chemin, noms des
+// paramètres et des champs seulement, jamais de valeurs.
+let survey = [];
+chrome.storage.local.get('survey').then(({ survey: s }) => { if (Array.isArray(s)) survey = s; });
+function addSurvey(e, senderUrl) {
+  try { if (!DOM_IN_HOST.test(new URL(senderUrl).hostname)) return; } catch { return; }
+  const key = e.host + e.path;
+  survey = [{ ...e, at: Date.now() }, ...survey.filter((x) => x.host + x.path !== key)].slice(0, 30);
+  chrome.storage.local.set({ survey });
 }
 
 // Adresse repérée sur le site Vinted : seulement une CANDIDATE, vérifiée avant toute utilisation.
@@ -351,10 +362,25 @@ function tsFromText(html) {
 
 const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? String(v.title || v.name || '') : '');
 
+// Les adresses des photos Vinted se terminent par la date d'envoi de la photo :
+// « …/f800/1731247200.jpeg?s=… » → date réelle de l'annonce, sans rien deviner.
+function tsFromPhoto(i, ph) {
+  const urls = [];
+  const add = (p) => { if (!p) return; urls.push(p.url, p.full_size_url); for (const t of p.thumbnails || []) urls.push(t && t.url); };
+  add(ph); if (Array.isArray(i.photos)) i.photos.slice(0, 2).forEach(add);
+  const now = Date.now();
+  for (const u of urls) {
+    const m = typeof u === 'string' && u.match(/\/(\d{10})\.(?:jpe?g|webp|png|avif)(?:[?#]|$)/i);
+    if (m) { const t = Number(m[1]) * 1000; if (t > now - 5 * 365 * 86400000 && t < now + 3600000) return t; }
+  }
+  return null;
+}
+
 function slim(i, domain) {
   const ph = i.photo || (Array.isArray(i.photos) && i.photos[0]) || {};
   const thumb = (ph.thumbnails || []).find((t) => t.type === 'thumb310x430') || (ph.thumbnails || [])[0];
-  const ts = tsOf(i, ph);
+  const tsData = tsOf(i, ph), tsPhoto = tsData ? null : tsFromPhoto(i, ph);
+  const ts = tsData || tsPhoto;
   return {
     id: i.id,
     title: txt(i.title),
@@ -368,6 +394,7 @@ function slim(i, domain) {
     url: !i.url ? `https://www.${domain}/items/${i.id}` : i.url.startsWith('/') ? `https://www.${domain}${i.url}` : i.url,
     photo: (thumb && thumb.url) || ph.url || '',
     ts,
+    tsSrc: tsData ? 'data' : tsPhoto ? 'photo' : '',
     user: (i.user && i.user.login) || '',
     favs: i.favourite_count || 0,
     views: i.view_count || 0,
@@ -559,7 +586,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, rscOff, lastRaw };
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, rscOff, lastRaw };
   if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), cap: capNow(), perMin: RL.times.filter((t) => Date.now() - t < 60000).length, captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
@@ -606,6 +633,7 @@ async function handle(msg, sender) {
 chrome.runtime.onMessage.addListener((msg, sender, send) => {
   if (msg && ['job?', 'jobPhase', 'jobResult', 'manualDone'].includes(msg.type)) { onCheckoutMessage(msg, sender, send); return false; }
   if (msg && msg.type === 'learn') { learn(msg.kind, msg.url, sender.url || ''); return false; }
+  if (msg && msg.type === 'survey') { addSurvey(msg.e || {}, sender.url || ''); return false; }
   handle(msg, sender).then(send, (e) => send({ ok: false, status: 0, error: String((e && e.message) || e) }));
   return true;
 });

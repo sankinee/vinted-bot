@@ -55,7 +55,8 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   await p.check('#abForm input[name=dryRun]');
 
   console.log('5. Âges et estimations');
-  await p.waitForFunction(() => Clock.ready(), null, { timeout: 420000, polling: 2000 }); // ~5 min la 1re fois
+  // Âges : immédiats si Vinted donne la date (photo), sinon après calibrage de l'horloge (~5 min).
+  await p.waitForFunction(() => { const a = [...document.querySelectorAll('.card .age')]; return a.length && a.filter((x) => /^(~?\d|vu \d)/.test(x.textContent)).length >= a.length * 0.8; }, null, { timeout: 420000, polling: 2000 });
   await p.waitForTimeout(3000);
   const ages = await p.$$eval('.card .age', (a) => a.map((x) => x.textContent));
   assert(ages.filter((x) => /^(~?\d|vu \d)/.test(x)).length >= ages.length * 0.8, `âges affichés (${ages.slice(0, 5).join(', ')})`);
@@ -71,7 +72,18 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
     const perMin = []; for (let m = 1; m <= 5; m++) perMin.push(st.requests.filter((r) => r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && !r.path.startsWith('/__img') && !/^\/(items|checkout)/.test(r.path) || (r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && r.rsc && r.path.startsWith('/items'))).length);
     assert(Math.max(...perMin) <= 16, `requêtes Vinted par minute (5 dernières min) : ${perMin.join(', ')} (plafond 15)`);
   }
-  console.log('6. Blocage Vinted (rate limited)');
+  console.log('6. Mode Sniper : délai entre apparition dans la recherche Vinted et affichage');
+  await p.check('#settings input[name=sniper]');
+  await p.evaluate(() => { for (const r of S.rt.values()) r.delays = []; });
+  await p.waitForTimeout(70000);
+  const lagMs = Number(process.env.MOCK_LAG || 20000) + Number(process.env.MOCK_ADDED_OFFSET || 0); // indexation + décalage simulé du « Ajouté il y a »
+  const delays = await p.evaluate(() => [...S.rt.values()].flatMap((r) => r.delays || []));
+  const med = delays.sort((x, y) => x - y)[Math.floor(delays.length / 2)];
+  console.log(`     ${delays.length} nouvelles annonces, délai publication → affichage médian ${(med / 1000).toFixed(1)} s (dont ${lagMs / 1000} s d'indexation simulée chez Vinted)`);
+  assert(delays.length >= 3 && med - lagMs < 8000, `affichée ${((med - lagMs) / 1000).toFixed(1)} s après son apparition dans la recherche Vinted`);
+  await p.uncheck('#settings input[name=sniper]');
+
+  console.log('7. Blocage Vinted (rate limited)');
   await fetchInsecure('https://www.vinted.fr/__mock/ratelimit?on=1');
   await p.waitForFunction(() => /Pause Vinted/.test(document.querySelector('#srcLabel').textContent), null, { timeout: 40000 });
   assert(true, 'pause automatique affichée : ' + (await p.textContent('#srcLabel')));

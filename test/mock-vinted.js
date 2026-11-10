@@ -8,7 +8,8 @@ const fs = require('fs');
 const { URL } = require('url');
 
 const PORT = Number(process.env.MOCK_PORT || 443);
-const WITH_TS = process.env.MOCK_TS === '1';     // inclure photo.high_resolution.timestamp
+const WITH_TS = process.env.MOCK_TS === '1';
+const PHOTO_TS = process.env.MOCK_PHOTO_TS === '1'; // date dans l'adresse de la photo, comme sur Vinted     // inclure photo.high_resolution.timestamp
 const INDEX_LAG = Number(process.env.MOCK_LAG || 20000); // délai d'indexation dans la recherche (ms)
 const RATE = 12 / 1000;
 const ADDED_OFFSET = Number(process.env.MOCK_ADDED_OFFSET || 0); // « Ajouté il y a » plus ancien que le numéro (ms)                          // ids Vinted par ms (≈ 12 annonces / s sur toute la plateforme)
@@ -51,7 +52,9 @@ function apiItem(it, host) {
     id: it.id, title: it.title, price: { amount: it.price.toFixed(1), currency_code: 'EUR' },
     total_item_price: { amount: (it.price * 1.05 + 0.7).toFixed(2), currency_code: 'EUR' }, service_fee: { amount: (it.price * 0.05 + 0.7).toFixed(2) },
     brand_title: it.brand, size_title: it.size, status: it.status, url: `/items/${slug(it)}`, promoted: false,
-    photo: { id: it.id + 1, url: `https://${host}/__img/${it.id}.svg`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/${it.id}.svg` }] },
+    photo: PHOTO_TS
+      ? { id: it.id + 1, url: `https://${host}/__img/t/03_${it.id}/f800/${Math.floor(it.createdAt / 1000)}.jpeg?s=ab12`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/t/03_${it.id}/310x430/${Math.floor(it.createdAt / 1000)}.webp?s=cd34` }] }
+      : { id: it.id + 1, url: `https://${host}/__img/${it.id}.svg`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/${it.id}.svg` }] },
     user: { id: 555000 + (it.id % 1000), login: `vendeur${it.id % 1000}`, last_loged_on_ts: new Date().toISOString() },
     favourite_count: it.id % 20, view_count: 0,
   };
@@ -122,7 +125,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     if (u.pathname === '/__mock/item') { const it = [...items.values()].find((i) => !i.sold && i.createdAt < Date.now() - 60000 && i.brand === (u.searchParams.get('brand') || 'Ralph Lauren')); return send(res, 200, 'application/json', JSON.stringify(it)); }
   }
   STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1' });
-  if (u.pathname.startsWith('/__img/')) return send(res, 200, 'image/svg+xml', svg(parseInt(u.pathname.slice(7), 10)));
+  if (u.pathname.startsWith('/__img/')) return send(res, 200, 'image/svg+xml', svg(parseInt((u.pathname.match(/\d{6,}/) || ['0'])[0], 10)));
   if (STATE.rateLimited) return send(res, 429, 'text/html', '<h1>You are rate limited</h1><p>access to this site is blocked for this computer, due to too many requests.</p>');
 
   if (host.startsWith('api.')) {
