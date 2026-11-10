@@ -30,7 +30,7 @@ const DEFAULTS = {
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 10,
 };
 const APP_VERSION = '3.4';
-const EXT_MIN = '3.4.0';
+const EXT_MIN = '3.5.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;

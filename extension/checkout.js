@@ -125,6 +125,7 @@
     if (!manual || !ITEM_PAGE.test(location.pathname)) return;
     if (location.hash === '#flipdar-buy') history.replaceState(null, '', location.pathname + location.search);
     const b = await waitFor(findBuy, 20000);
+    await waitFor(() => document.readyState === 'complete', 10000); await sleep(700);
     if (job && job.manual) ask({ type: 'manualDone', found: !!b });
     if (b) humanClick(b);
     return;
@@ -159,7 +160,10 @@
       if (!buy) { if (Date.now() - t0 > 3000 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(120); }
     }
     if (!buy) return report(buyDisabledOnly() ? 'action' : 'unavailable', { reason: (buyDisabledOnly() ? 'Bouton « Acheter » grisé' : 'Bouton « Acheter » introuvable') + ' ' + buyDiag() });
-    if (job.delay) await sleep(rand(150, 400));
+    // La page s'affiche avant que ses boutons soient « branchés » (surtout dans une fenêtre cachée) :
+    // on attend la fin du chargement + un court délai avant de cliquer.
+    await waitFor(() => document.readyState === 'complete', 10000);
+    await sleep(job.delay ? rand(700, 1000) : 600);
     await step('buy', 'Clic sur « Acheter »', { phase: 'checkout' });
     job.phase = 'checkout';
     dialogsBefore = document.querySelectorAll(DLG).length;
