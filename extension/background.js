@@ -244,29 +244,48 @@ function extractObjects(corpus, accept) {
 const looksLikeItem = (o) => o && typeof o.id === 'number' && o.id > 99999 && typeof o.title === 'string' && o.price != null;
 
 // Demande le flux de données Next.js (en-tête RSC) : beaucoup plus léger que la page HTML complète.
-let rscOff = false;
-const fetchPage = (url) => vfetch(url, { credentials: 'include', cache: 'no-store', headers: rscOff ? {} : { RSC: '1' } });
+// Le flux n'est mis de côté que s'il est PROUVÉ incomplet (la page complète trouve des annonces
+// que le flux n'a pas), deux fois de suite. Une recherche simplement vide ne compte pas.
+let rscOffUntil = 0, rscFails = 0;
+const emptyQueries = new Map(); // recherche -> fin de validité « vraiment vide » (évite une double requête)
+const rscOn = () => Date.now() > rscOffUntil;
+const fetchPage = (url, rsc = rscOn()) => vfetch(url, { credentials: 'include', cache: 'no-store', headers: rsc ? { RSC: '1' } : {} });
 async function readPage(r) {
   const text = await r.text();
   const rsc = /x-component/.test(r.headers.get('content-type') || '');
   return { corpus: rsc ? text : pageCorpus(text), rsc, html: rsc ? '' : text };
 }
+async function fetchCatalog(url, rsc) {
+  const r = await fetchPage(url, rsc);
+  if (!r.ok) return { r };
+  const pg = await readPage(r);
+  return { r, ...pg, items: extractObjects(pg.corpus, looksLikeItem).sort((a, b) => b.id - a.id) };
+}
+const pageError = (r) => ({ ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0, captcha: !!r.captcha });
 
 async function searchHtml(domain, query) {
   const p = new URLSearchParams(query);
   for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
   p.delete('per_page');
+  const qKey = p.toString();
   p.set('time', String(Math.floor(Date.now() / 1000))); // évite une page de résultats mise en cache par Vinted
+  const url = `https://www.${domain}/catalog?${p}`;
   const t0 = Date.now();
-  const r = await fetchPage(`https://www.${domain}/catalog?${p}`);
-  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0, captcha: !!r.captcha };
-  const { corpus, rsc } = await readPage(r);
-  const items = extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id);
-  if (!items.length) {
-    if (rsc && !rscOff) { rscOff = true; setTimeout(() => { rscOff = false; }, 10 * 60000); return searchHtml(domain, query); } // repli sur la page complète
-    return { ok: false, status: 0, error: corpus.length < 5000 ? 'page Vinted vide (vérification anti-robot ?) : ouvre vinted.fr dans un onglet' : 'aucune annonce lisible dans la page' };
+  let a = await fetchCatalog(url, rscOn());
+  if (!a.r.ok) return pageError(a.r);
+  if (!a.items.length && a.rsc && !(emptyQueries.get(qKey) > Date.now())) {
+    // Flux vide : on vérifie une fois sur la page complète.
+    const c = await fetchCatalog(url, false);
+    if (!c.r.ok) return pageError(c.r);
+    if (c.items.length) { if (++rscFails >= 2) { rscOffUntil = Date.now() + 10 * 60000; rscFails = 0; } a = c; }
+    else { emptyQueries.set(qKey, Date.now() + 5 * 60000); a = c.corpus.length > a.corpus.length ? c : a; }
+  } else if (a.items.length && a.rsc) rscFails = 0;
+  if (!a.items.length) {
+    if ((a.corpus || '').length < 3000 && !a.rsc) return { ok: false, status: 0, error: 'page Vinted vide (vérification anti-robot ?) : ouvre vinted.fr dans un onglet' };
+    return { ok: true, status: a.r.status, ms: Date.now() - t0, data: { items: [] }, via: a.rsc ? 'rsc' : 'page' }; // recherche sans résultat
   }
-  return { ok: true, status: r.status, ms: Date.now() - t0, data: { items }, via: rsc ? 'rsc' : 'page' };
+  emptyQueries.delete(qKey);
+  return { ok: true, status: a.r.status, ms: Date.now() - t0, data: { items: a.items }, via: a.rsc ? 'rsc' : 'page' };
 }
 
 async function search(domain, query) {
@@ -586,7 +605,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, rscOff, lastRaw };
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rscOffUntil, rscFails, rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, lastRaw };
   if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), cap: capNow(), perMin: RL.times.filter((t) => Date.now() - t < 60000).length, captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();

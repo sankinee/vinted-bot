@@ -144,7 +144,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
   }
   if (u.pathname === '/catalog') {
     const list = searchItems(u.searchParams).map((i) => apiItem(i, host));
-    if (req.headers.rsc === '1') return send(res, 200, 'text/x-component', flight({ items: list }));
+    if (req.headers.rsc === '1') return send(res, 200, 'text/x-component', flight(process.env.MOCK_RSC_BROKEN === '1' ? { banners: [] } : { items: list }));
     return send(res, 200, 'text/html; charset=utf-8', htmlWithFlight({ items: list }, '<main>Catalogue</main>'));
   }
   const m = u.pathname.match(/^\/items\/(\d+)/);
