@@ -13,6 +13,8 @@ const DEFAULTS = {
   interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
+const APP_VERSION = '2.3';
+const EXT_MIN = '2.3.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -459,6 +461,13 @@ function renderAbLog() {
 async function refreshExt() {
   if (S.settings.demo) S.ext = { enabled: true, trusted: true };
   else if (S.bridge) { const r = await Bridge.call({ type: 'abConfig' }, 3000); S.ext = r && r.ok ? r : null; }
+  if (S.bridge && !S.extVersion) {
+    const v = await Bridge.call({ type: 'version' }, 3000);
+    S.extVersion = (v && v.version) || '?';
+    const old = S.extVersion.localeCompare(EXT_MIN, undefined, { numeric: true }) < 0;
+    const e = $('#ver'); e.textContent = `site ${APP_VERSION} · ext ${S.extVersion}${old ? ' (à mettre à jour)' : ''}`; e.classList.toggle('old', old);
+    if (old) toast(`Extension ${S.extVersion} trop ancienne : retélécharge flipdar-extension.zip (≥ ${EXT_MIN}).`);
+  }
   renderAbState();
 }
 

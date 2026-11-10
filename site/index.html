@@ -6,13 +6,14 @@
   <title>Flipdar</title>
   <meta name="description" content="Moniteur Vinted temps réel, achat en un clic et estimation de revente.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300c2a8'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%23062b26'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css">
+  <meta http-equiv="Cache-Control" content="no-cache">
+  <link rel="stylesheet" href="style.css?v=2.3">
 </head>
 <body>
   <header class="top">
     <div class="brand"><span class="logo"></span>Flipdar</div>
     <div class="stats" id="stats">
-      <span><i id="dot" class="dot"></i><b id="srcLabel">Hors ligne</b></span>
+      <span><i id="dot" class="dot"></i><b id="srcLabel">Hors ligne</b> <small id="ver" class="ver"></small></span>
       <span>Req/min <b id="rpm">0</b></span>
       <span>Latence <b id="lat">–</b></span>
       <span>Trouvés <b id="found">0</b></span>
@@ -161,6 +162,6 @@
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=2.3"></script>
 </body>
 </html>
