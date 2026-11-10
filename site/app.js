@@ -13,8 +13,8 @@ const DEFAULTS = {
   interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.3';
-const EXT_MIN = '2.3.0';
+const APP_VERSION = '2.4';
+const EXT_MIN = '2.4.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -55,6 +55,7 @@ const Bridge = {
       const d = e.data;
       if (d.dir === 'hello') { if (!S.bridge) { S.bridge = true; updateSource(); refreshExt(); } }
       else if (d.dir === 'res') { const p = this.pending.get(d.id); if (p) { this.pending.delete(d.id); p(d.res); } }
+      else if (d.dir === 'event' && d.ev && d.ev.type === 'abProgress') abProgress(d.ev);
     });
     window.postMessage({ ns: 'flipdar', dir: 'ping' }, location.origin);
   },
@@ -98,9 +99,10 @@ const Demo = {
     if (r < 0.38) return { ok: true, state: 'gone', price: null };
     return { ok: true, state: 'live', price: it ? it.price : null };
   },
-  async autobuy({ maxTotal, dryRun }) {
-    await sleep(900 + Math.random() * 700);
-    const total = +(maxTotal - 2 - Math.random() * 3).toFixed(2);
+  async autobuy({ itemId, maxTotal, dryRun }) {
+    const total = +(maxTotal - 2 - Math.random() * 3).toFixed(2), t0 = Date.now();
+    const steps = [['item'], ['buy'], ['checkout'], ['delivery'], ['total', `Total vérifié : ${total.toFixed(2)} €`]].concat(dryRun ? [] : [['pay'], ['3ds']]);
+    for (const [step, detail] of steps) { await sleep(250 + Math.random() * 350); abProgress({ itemId, step, detail, ms: Date.now() - t0 }); }
     return Math.random() < 0.15 ? { ok: false, status: 'unavailable', reason: 'Article vendu juste avant toi' }
       : { ok: true, status: dryRun ? 'dry' : 'bought', total, ms: 1300, reason: dryRun ? 'Simulation : tout est prêt, aucun paiement effectué' : '' };
   },
@@ -430,6 +432,7 @@ async function abRun() {
   const entry = { ts: Date.now(), id: item.id, title: item.title, price: item.price, url: item.url, monitor: f.name, status: 'run', dry: S.settings.dryRun };
   AB.log.unshift(entry); AB.log.length = Math.min(AB.log.length, 60);
   renderAbLog();
+  abPanelStart(item, S.settings.dryRun);
   const src = source();
   const maxTotal = +(buyerTotal(item) + Number(S.settings.maxShipping || 0)).toFixed(2);
   const res = src ? await src.autobuy({ domain: itemDomain(item), itemId: item.id, maxTotal, dryRun: S.settings.dryRun, humanDelay: true })
@@ -437,12 +440,64 @@ async function abRun() {
   Object.assign(entry, { status: res.status || 'error', reason: res.reason || res.error || '', total: res.total, ms: res.ms });
   store.set(S.settings.demo ? 'ablog-demo' : 'ablog', AB.log);
   renderAbLog();
+  abPanelEnd(entry);
   if (res.status === 'bought') { rec.el.classList.add('bought'); beep(true); beep(true, 0.15); }
   toast(`${AB_LABEL[entry.status]?.[0] || entry.status} · ${item.title}${entry.reason ? ' — ' + entry.reason : ''}`);
   AB.busy = false;
   if (res.status === 'refused') AB.queue.length = 0;
   abRun();
 }
+
+/* Fenêtre de progression d'un achat (façon « checkout en direct ») */
+const AB_STEPS = [
+  ['open', "Ouverture de l'article"], ['buy', 'Acheter'], ['checkout', 'Récapitulatif'], ['delivery', 'Adresse et livraison'],
+  ['total', 'Total vérifié'], ['pay', 'Paiement'], ['3ds', '3-D Secure'], ['done', 'Confirmé'],
+];
+const STEP_ALIAS = { item: 'open' };
+let abp = null;
+function abPanelStart(item, dry) {
+  abp = { id: item.id, idx: -1, t0: Date.now(), dry };
+  $('#abpTitle').textContent = dry ? 'Simulation d’achat' : 'Achat en cours';
+  $('#abpImg').src = safeUrl(item.photo);
+  $('#abpName').textContent = item.title;
+  $('#abpPrice').textContent = `${eur(item.price)} · ${eur(buyerTotal(item))} TTC`;
+  $('#abpSteps').replaceChildren(...AB_STEPS.filter(([k]) => !(dry && (k === 'pay' || k === '3ds'))).map(([k, l]) => { const li = el('li', '', l); li.dataset.k = k; return li; }));
+  const m = $('#abpMsg'); m.textContent = ''; m.className = 'abp-msg';
+  $('#abpFocus').hidden = S.settings.demo;
+  $('#abPanel').hidden = false;
+  abProgress({ itemId: item.id, step: 'open', ms: 0 });
+}
+function abProgress(ev) {
+  if (!abp || ev.itemId !== abp.id) return;
+  const k = STEP_ALIAS[ev.step] || ev.step;
+  const lis = [...$('#abpSteps').children];
+  const i = lis.findIndex((li) => li.dataset.k === k);
+  if (i < 0) return;
+  // Étape reçue = atteinte. Le 3-D Secure reste « en cours » tant que la banque n'a pas validé.
+  lis.forEach((li, j) => { li.classList.toggle('done', j < i || (j === i && k !== '3ds')); li.classList.remove('cur'); });
+  const next = lis.find((li) => !li.classList.contains('done')); if (next) next.classList.add('cur');
+  const li = lis[i];
+  if (ev.detail && k === 'total') li.firstChild.textContent = ev.detail;
+  let s = li.querySelector('small'); if (!s) { s = el('small'); li.append(s); }
+  s.textContent = `${((ev.ms || 0) / 1000).toFixed(1)} s`;
+  if (k === '3ds') { const m = $('#abpMsg'); m.textContent = '🔐 Valide le paiement sur ton appli bancaire…'; m.className = 'abp-msg warn'; }
+}
+function abPanelEnd(entry) {
+  if (!abp || entry.id !== abp.id) return;
+  const lis = [...$('#abpSteps').children];
+  const ok = entry.status === 'bought' || entry.status === 'dry';
+  lis.forEach((li) => li.classList.remove('cur'));
+  if (ok) lis.forEach((li) => li.classList.add('done'));
+  else { const cur = lis.find((li) => !li.classList.contains('done')); if (cur) cur.classList.add('fail'); }
+  const [label, cls] = AB_LABEL[entry.status] || [entry.status, 'warn'];
+  const m = $('#abpMsg');
+  m.textContent = `${label}${entry.total ? ` · ${eur(entry.total)}` : ''}${entry.ms ? ` en ${(entry.ms / 1000).toFixed(1)} s` : ''}${entry.reason ? ' — ' + entry.reason : ''}`;
+  m.className = 'abp-msg ' + cls;
+  $('#abpFocus').hidden = S.settings.demo || entry.status !== 'action';
+  abp = null;
+}
+$('#abpClose').addEventListener('click', () => { $('#abPanel').hidden = true; });
+$('#abpFocus').addEventListener('click', () => Bridge.call({ type: 'abFocus' }, 3000));
 
 function renderAbLog() {
   const ul = $('#abLog');

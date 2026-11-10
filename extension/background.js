@@ -282,19 +282,32 @@ async function itemStatus(domain, id) {
 const jobs = new Map(); // tabId -> job
 let buying = false;
 
+// Envoie l'avancement de l'achat à l'onglet Flipdar (fenêtre de progression).
+function progress(job, step, detail, extra = {}) {
+  if (job.siteTab == null) return;
+  chrome.tabs.sendMessage(job.siteTab, { type: 'abProgress', itemId: job.itemId, step, detail, ms: Date.now() - job.t0, ...extra }).catch(() => {});
+}
+function armTimer(job, ms) {
+  clearTimeout(job.timer);
+  job.timer = setTimeout(() => finish(job, job.phase === 'clicked'
+    ? { ok: true, status: 'bought', reason: 'Paiement envoyé, confirmation non détectée : vérifie dans tes commandes' }
+    : { ok: false, status: 'action', reason: 'Délai dépassé sur la page de paiement' }), ms);
+}
+
 function finish(job, result) {
   if (job.done) return;
   job.done = true;
   clearTimeout(job.timer);
   jobs.delete(job.tabId);
   buying = false;
+  clearTimeout(job.focusT);
   job.resolve(result);
   const keepOpen = result.status === 'action' || (result.status === 'bought' && !job.dryRun);
   if (result.status === 'action') chrome.tabs.update(job.tabId, { active: true }).catch(() => {});
   if (!keepOpen) setTimeout(() => chrome.tabs.remove(job.tabId).catch(() => {}), job.dryRun ? 800 : 0);
 }
 
-async function autobuy(msg, origin) {
+async function autobuy(msg, origin, siteTab) {
   const c = await abConfig();
   if (!c.enabled) return { ok: false, status: 'refused', reason: "Achat auto désactivé dans l'extension" };
   if (!c.trusted.includes(origin)) return { ok: false, status: 'refused', reason: `Site non autorisé (${origin}) : ouvre le popup de l'extension sur ce site` };
@@ -313,11 +326,10 @@ async function autobuy(msg, origin) {
   try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
 
   const result = await new Promise((resolve) => {
-    const job = { tabId: tab.id, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };
+    const job = { tabId: tab.id, siteTab, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };
     jobs.set(tab.id, job);
-    job.timer = setTimeout(() => finish(job, job.phase === 'clicked'
-      ? { ok: true, status: 'bought', reason: 'Paiement envoyé, confirmation non détectée : vérifie dans tes commandes' }
-      : { ok: false, status: 'action', reason: 'Délai dépassé sur la page de paiement' }), 40000);
+    armTimer(job, 45000);
+    progress(job, 'open', 'Ouverture de l’article');
   });
 
   if (result.status === 'bought' && !msg.dryRun) {
@@ -336,7 +348,15 @@ function onCheckoutMessage(msg, sender, send) {
     return;
   }
   if (!job) return send(null);
-  if (msg.type === 'jobPhase') { job.phase = msg.phase; if (msg.total) job.total = msg.total; return send(true); }
+  if (msg.type === 'jobPhase') {
+    if (msg.phase) job.phase = msg.phase;
+    if (msg.total) job.total = msg.total;
+    if (msg.step) progress(job, msg.step, msg.detail, { total: msg.total });
+    // 3-D Secure : on laisse jusqu'à 5 min et on montre l'onglet au bout de 10 s si besoin.
+    if (msg.step === '3ds') { armTimer(job, 300000); job.focusT = setTimeout(() => chrome.tabs.update(job.tabId, { active: true }).catch(() => {}), 10000); }
+    else armTimer(job, job.phase === 'clicked' ? 60000 : 45000);
+    return send(true);
+  }
   if (msg.type === 'jobResult') {
     finish(job, { ok: msg.status === 'bought' || msg.status === 'dry', ms: Date.now() - job.t0, total: msg.total || job.total, ...msg, type: undefined });
     return send(true);
@@ -364,7 +384,11 @@ async function handle(msg, sender) {
     return { ok: true, status: res.status, ms: res.ms, via: res.via, items: (res.data.items || []).map((i) => slim(i, domain)) };
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
-  if (msg.type === 'autobuy') return autobuy(msg, origin);
+  if (msg.type === 'autobuy') return autobuy(msg, origin, sender.tab && sender.tab.id);
+  if (msg.type === 'abFocus') {
+    for (const j of jobs.values()) if (j.siteTab === (sender.tab && sender.tab.id)) { await chrome.tabs.update(j.tabId, { active: true }); return { ok: true }; }
+    return { ok: false };
+  }
   return { ok: false, status: 0, error: 'type inconnu' };
 }
 

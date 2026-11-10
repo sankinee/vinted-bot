@@ -24,6 +24,11 @@
     }
   });
 
+  // Événements poussés par l'extension (progression d'un achat auto).
+  chrome.runtime.onMessage.addListener((m) => {
+    if (m && m.type === 'abProgress') window.postMessage({ ns: NS, dir: 'event', ev: m }, location.origin);
+  });
+
   hello();
   document.addEventListener('DOMContentLoaded', hello);
 })();
