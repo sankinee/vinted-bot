@@ -124,16 +124,29 @@ function extractObjects(corpus, accept) {
 }
 const looksLikeItem = (o) => o && typeof o.id === 'number' && o.id > 99999 && typeof o.title === 'string' && o.price != null;
 
+// Demande le flux de données Next.js (en-tête RSC) : beaucoup plus léger que la page HTML complète.
+let rscOff = false;
+const fetchPage = (url) => fetch(url, { credentials: 'include', cache: 'no-store', headers: rscOff ? {} : { RSC: '1' } });
+async function readPage(r) {
+  const text = await r.text();
+  const rsc = /x-component/.test(r.headers.get('content-type') || '');
+  return { corpus: rsc ? text : pageCorpus(text), rsc, html: rsc ? '' : text };
+}
+
 async function searchHtml(domain, query) {
   const p = new URLSearchParams(query);
   for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
   p.delete('per_page');
   const t0 = Date.now();
-  const r = await fetch(`https://www.${domain}/catalog?${p}`, { credentials: 'include', cache: 'no-store' });
+  const r = await fetchPage(`https://www.${domain}/catalog?${p}`);
   if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
-  const items = extractObjects(pageCorpus(await r.text()), looksLikeItem).sort((a, b) => b.id - a.id);
-  if (!items.length) return { ok: false, status: 0, error: 'aucune annonce lisible dans la page' };
-  return { ok: true, status: r.status, ms: Date.now() - t0, data: { items }, via: 'page' };
+  const { corpus, rsc } = await readPage(r);
+  const items = extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id);
+  if (!items.length) {
+    if (rsc) { rscOff = true; return searchHtml(domain, query); } // flux illisible : repli sur la page complète
+    return { ok: false, status: 0, error: 'aucune annonce lisible dans la page' };
+  }
+  return { ok: true, status: r.status, ms: Date.now() - t0, data: { items }, via: rsc ? 'rsc' : 'page' };
 }
 
 async function search(domain, query) {
@@ -255,14 +268,14 @@ async function itemStatus(domain, id) {
     if (res.status === 404 && tpl !== EP.item) dead.add(tpl);
   }
   // Page de l'article (comme dans le navigateur) : une annonce vendue y reste visible avec son prix.
-  const r = await fetch(`https://www.${domain}/items/${id}`, { credentials: 'include', cache: 'no-store' });
+  const r = await fetchPage(`https://www.${domain}/items/${id}`);
   if (r.status === 404 || r.status === 410) return { ok: true, state: 'gone', price: null, via: 'page' };
   if (!r.ok) return { ok: false, status: r.status };
   if (!new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
-  const html = await r.text();
-  const objs = extractObjects(pageCorpus(html), (o) => o && o.id === id);
-  if (objs.length) return { ok: true, via: 'page', ...statusFromJson(objs[0]) };
-  return { ok: true, via: 'page', ...statusFromHtml(html) };
+  const { corpus, rsc, html } = await readPage(r);
+  const objs = extractObjects(corpus, (o) => o && o.id === id);
+  if (objs.length) return { ok: true, via: rsc ? 'rsc' : 'page', ...statusFromJson(objs[0]) };
+  return { ok: true, via: 'page', ...statusFromHtml(html || corpus) };
 }
 
 /* ------------------------------------------------------------------ Achat automatique */
@@ -295,7 +308,7 @@ async function autobuy(msg, origin) {
   if (buying) return { ok: false, status: 'busy', reason: 'Un achat est déjà en cours' };
   buying = true;
 
-  const url = `https://www.${msg.domain}/transaction/buy/new?source_screen=item&transaction%5Bitem_id%5D=${id}`;
+  const url = `https://www.${msg.domain}/items/${id}`; // page de l'article, puis clic « Acheter »
   let tab;
   try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
 

@@ -482,7 +482,8 @@ function renderAbState() {
 const eur = (v, d = 2) => Number.isFinite(v) ? v.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR', minimumFractionDigits: d, maximumFractionDigits: d }) : '–';
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 const safeUrl = (u) => (/^(https:\/\/|data:image\/svg\+xml)/.test(u || '') ? u : '');
-const buyUrl = (domain, id) => `https://www.${domain}/transaction/buy/new?source_screen=item&transaction%5Bitem_id%5D=${id}`;
+// Ouvre l'article ; l'extension clique « Acheter » toute seule pour arriver directement au paiement.
+const buyUrl = (domain, id) => `https://www.${domain}/items/${id}#flipdar-buy`;
 function itemDomain(i) { try { return new URL(i.url).hostname.replace(/^www\./, ''); } catch { return 'vinted.fr'; } }
 
 const tpl = $('#cardTpl').content.firstElementChild;
@@ -668,7 +669,7 @@ function renderMonitorStatus(f) {
   s.replaceChildren(el('span', '', f.domain.replace('vinted.', '').toUpperCase()), el('span', '', `${r.found} trouvés`),
     el('span', '', st ? `médiane ${eur(st.med, 0)}` : `${r.prices.length}/${MIN_SAMPLES} prix`));
   if (f.ab && f.ab.on) s.append(el('span', '', `⚡ ≤ ${f.ab.maxPrice} €`));
-  if (r.via) s.append(el('span', '', r.via === 'page' ? 'via page' : 'via API'));
+  if (r.via) s.append(el('span', '', { page: 'via page', rsc: 'via flux rapide', api: 'via API' }[r.via] || r.via));
   if (r.err) s.append(el('span', 'err', r.err));
 }
 

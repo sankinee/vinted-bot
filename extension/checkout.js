@@ -2,10 +2,25 @@
 // Parcourt le vrai tunnel de paiement comme un humain : vérifie le total, attend un peu, clique « Payer ».
 (async () => {
   const ask = (m) => new Promise((r) => { try { chrome.runtime.sendMessage(m, r); } catch { r(null); } });
-  const job = await ask({ type: 'job?' });
-  if (!job) return;
-
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const ITEM_PAGE = /\/items\/\d+/;
+  const BUY_RE = /^(acheter|buy now|buy|comprar|compra|compra ora|kaufen|jetzt kaufen|kopen|nu kopen|kup teraz|kup|cumpără|koupit|kúpiť|osta|ostaa|köp|køb|vásárlás|kupi|αγορά)$/i;
+  const visibleBtn = (el) => el && el.offsetParent !== null && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+  const findBuy = () => [...document.querySelectorAll('button, [role="button"], a')].find((b) => visibleBtn(b)
+    && (BUY_RE.test((b.innerText || '').trim()) || /^item-buy-button$|buy-button/i.test(b.getAttribute('data-testid') || '')));
+  const waitFor = async (fn, ms) => { for (let t = 0; t < ms; t += 150) { const v = fn(); if (v) return v; await sleep(150); } return null; };
+
+  const job = await ask({ type: 'job?' });
+  if (!job) {
+    // Bouton « ⚡ Acheter » de Flipdar : ouvre l'article puis clique « Acheter » pour arriver au paiement.
+    if (location.hash === '#flipdar-buy' && ITEM_PAGE.test(location.pathname)) {
+      history.replaceState(null, '', location.pathname + location.search);
+      const b = await waitFor(findBuy, 10000);
+      if (b) b.click();
+    }
+    return;
+  }
+
   const rand = (a, b) => a + Math.random() * (b - a);
   const report = (status, extra = {}) => ask({ type: 'jobResult', status, url: location.href, ...extra });
   const text = () => (document.body ? document.body.innerText : '');
@@ -51,10 +66,23 @@
     return; // le service worker conclura au délai
   }
 
-  // Phase 1 : page de paiement.
+  // Phase 1 : page de l'article -> clic sur « Acheter ».
+  if (job.phase === 'open' && ITEM_PAGE.test(location.pathname)) {
+    let buy = null;
+    for (let i = 0; i < 70 && !buy; i++) {
+      buy = findBuy();
+      if (!buy) { if (i > 20 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(150); }
+    }
+    if (!buy) return report('unavailable', { reason: 'Bouton « Acheter » absent : article vendu, réservé ou page modifiée' });
+    if (job.delay) await sleep(rand(150, 400));
+    await ask({ type: 'jobPhase', phase: 'checkout' });
+    buy.click();
+  }
+
+  // Phase 2 : page de paiement (même onglet, après navigation).
   let pay = null;
-  for (let i = 0; i < 60 && !pay; i++) {
-    if (UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article déjà vendu ou réservé' });
+  for (let i = 0; i < 100 && !pay; i++) {
+    if (i > 10 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article déjà vendu ou réservé' });
     pay = findPay();
     if (!pay) await sleep(200);
   }
