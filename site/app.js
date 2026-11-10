@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '5.0' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '5.1' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,7 +29,7 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
 };
-const APP_VERSION = '5.0';
+const APP_VERSION = '5.1';
 const EXT_MIN = '5.0.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
@@ -1117,6 +1117,34 @@ function updateSource() {
   $('#help').hidden = S.bridge && !S.settings.demo;
 }
 
+/* Recherches tendance (achat-revente) : mots-clés + prix max, triées des plus récentes. */
+const PRESETS = [
+  ['Ralph Lauren pull', 'ralph lauren pull', 25], ['Ralph Lauren zip', 'ralph lauren zip', 25], ['Lacoste polo', 'lacoste polo', 15],
+  ['Carhartt veste', 'carhartt veste', 40], ['Carhartt Detroit', 'carhartt detroit', 70], ['Nike Tech Fleece', 'nike tech fleece', 35],
+  ['Nike TN', 'nike tn', 60], ['Adidas Samba', 'adidas samba', 45], ['New Balance 9060', 'new balance 9060', 70],
+  ['Salomon XT-6', 'salomon xt-6', 80], ['North Face Nuptse', 'north face nuptse', 90], ["Arc'teryx", 'arcteryx', 120],
+  ['Stone Island', 'stone island', 80], ['Patagonia polaire', 'patagonia polaire', 35], ['Barbour veste', 'barbour veste', 60],
+  ['UGG Tasman', 'ugg tasman', 50], ["Levi's 501", 'levis 501', 15], ['Stüssy', 'stussy', 25], ['Burberry trench', 'burberry trench', 120],
+  ['Moncler doudoune', 'moncler doudoune', 200],
+];
+function renderPresets() {
+  const box = $('#presets'); if (!box) return;
+  box.replaceChildren(...PRESETS.map(([name, q, max]) => {
+    const b = el('button', '', name); b.type = 'button'; b.append(el('small', '', `≤ ${max} €`));
+    b.title = `Ajouter « ${q} » à ${max} € maximum`;
+    b.onclick = () => {
+      const domain = ($('#addForm select[name=domain]') || {}).value || 'vinted.fr';
+      const url = `https://www.${domain}/catalog?search_text=${encodeURIComponent(q)}&price_to=${max}&order=newest_first`;
+      const spec = parseVintedUrl(url);
+      if (S.filters.some((f) => f.domain === spec.domain && f.params === spec.params)) return toast(`« ${name} » est déjà surveillé.`);
+      addFilter({ ...spec, name: `${name} ≤ ${max} €` });
+      const n = S.filters.filter((f) => f.enabled).length;
+      toast(n > 3 ? `« ${name} » ajouté. ${n} recherches actives : chacune sera vérifiée moins souvent (~${Math.round(n * 4.5)} s).` : `« ${name} » ajouté.`);
+    };
+    return b;
+  }));
+}
+
 /* ================================================================== Événements */
 on('#addForm', 'submit', (e) => {
   e.preventDefault();
@@ -1293,6 +1321,7 @@ function renderCooldown() {
 (async () => {
   Bridge.init();
   renderMonitors();
+  renderPresets();
   updateSource();
   renderAbLog();
   renderAbState();

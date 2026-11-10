@@ -7,8 +7,8 @@
   <meta name="description" content="Moniteur Vinted temps réel, achat en un clic et estimation de revente.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300c2a8'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%23062b26'/%3E%3C/svg%3E">
   <meta http-equiv="Cache-Control" content="no-cache">
-  <meta name="flipdar-version" content="5.0">
-  <link rel="stylesheet" href="style.css?v=5.0">
+  <meta name="flipdar-version" content="5.1">
+  <link rel="stylesheet" href="style.css?v=5.1">
 </head>
 <body>
   <header class="top">
@@ -53,6 +53,12 @@
           <label>Nom <input name="name" placeholder="optionnel"></label>
           <button class="btn primary wide" type="submit">+ Ajouter</button>
         </form>
+      </section>
+
+      <section class="panel">
+        <h2>Recherches tendance</h2>
+        <p class="note" style="margin:0 0 8px">Un clic = une recherche ajoutée (plus récentes d'abord, prix max pensé pour la revente). Garde 1 à 3 recherches actives pour rester rapide.</p>
+        <div id="presets" class="presets"></div>
       </section>
 
       <section class="panel">
@@ -174,6 +180,6 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=5.0"></script>
+  <script src="app.js?v=5.1"></script>
 </body>
 </html>

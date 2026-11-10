@@ -186,3 +186,8 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .pub { color: var(--muted); font-size: 11px; min-height: 14px; }
 
 .mon .s .ok { color: var(--good); }
+
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.presets button { border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 99px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.presets button:hover { border-color: var(--accent); }
+.presets button small { color: var(--muted); margin-left: 4px; }
