@@ -17,15 +17,24 @@
   const HOME_DELIVERY_RE = /(livraison à domicile|à domicile|home delivery|to your home|a domicilio|nach hause|thuisbezorging)/i;
   const THREEDS_SEL = 'iframe[src*="3ds" i], iframe[src*="challenge" i], iframe[name*="challenge" i], iframe[src*="acs" i], iframe[title*="3D" i], iframe[src*="adyen" i]';
 
-  const usable = (el) => el && el.offsetParent !== null && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+  // Visible = a une taille à l'écran (offsetParent est toujours null pour les éléments en position fixe).
+  const shown = (el) => { if (!el || !el.isConnected) return false; if (el.getClientRects().length === 0) return false; const st = getComputedStyle(el); return st.visibility !== 'hidden' && st.display !== 'none'; };
+  const enabled = (el) => !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+  const usable = (el) => shown(el) && enabled(el);
   // Ignore tout ce qui est dans l'en-tête, le menu, le pied de page ou un lien d'aide.
   const inChrome = (el) => !!el.closest('header, nav, footer, [role="navigation"], [role="banner"], [role="contentinfo"], [role="menu"]');
-  const labelOf = (b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim();
+  const labelOf = (b) => (b.innerText || b.textContent || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
 
-  function findBuy() {
-    const btns = [...document.querySelectorAll('button, [role="button"]')].filter((b) => usable(b) && !inChrome(b));
-    return btns.find((b) => BUY_RE.test(labelOf(b)))
-      || btns.find((b) => /(^|[-_])buy[-_]?button$|item[-_]buy/i.test(b.getAttribute('data-testid') || '') && !/buyer/i.test(b.getAttribute('data-testid') || ''));
+  const buyCandidates = () => [...document.querySelectorAll('button, [role="button"], a[href*="transaction"], a[href*="checkout"]')].filter((b) => !inChrome(b)
+    && (BUY_RE.test(labelOf(b)) || (/(^|[-_])buy[-_]?button$|item[-_]buy/i.test(b.getAttribute('data-testid') || '') && !/buyer/i.test(b.getAttribute('data-testid') || ''))));
+  // Bouton « Acheter » visible ; s'il est encore grisé (page pas finie de charger), on attend qu'il s'active.
+  const findBuy = () => buyCandidates().find(usable);
+  const buyDisabledOnly = () => buyCandidates().some((b) => shown(b) && !enabled(b));
+  // Diagnostic envoyé à Flipdar si le bouton reste introuvable.
+  function buyDiag() {
+    const els = [...document.querySelectorAll('button, [role="button"], a')].filter((b) => /achet|buy|kauf|compr|koop|kup/i.test(labelOf(b) + ' ' + (b.getAttribute('data-testid') || '')));
+    const d = els.slice(0, 6).map((b) => `${b.tagName.toLowerCase()}"${labelOf(b).slice(0, 25)}"${b.getAttribute('data-testid') ? '#' + b.getAttribute('data-testid') : ''}${shown(b) ? '' : ' invisible'}${enabled(b) ? '' : ' grisé'}${inChrome(b) ? ' menu' : ''}`);
+    return `[diag ${document.readyState}, ${els.length} bouton(s) : ${d.join(' | ') || 'aucun'}]`;
   }
   function findPay() {
     const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((b) => !inChrome(b));
@@ -106,11 +115,11 @@
     await step('item', "Page de l'article ouverte");
     let buy = null;
     const t0 = Date.now();
-    while (!buy && Date.now() - t0 < 12000) {
+    while (!buy && Date.now() - t0 < 20000) {
       buy = findBuy();
       if (!buy) { if (Date.now() - t0 > 3000 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(120); }
     }
-    if (!buy) return report('unavailable', { reason: 'Bouton « Acheter » absent : article vendu, réservé ou page modifiée' });
+    if (!buy) return report(buyDisabledOnly() ? 'action' : 'unavailable', { reason: (buyDisabledOnly() ? 'Bouton « Acheter » grisé' : 'Bouton « Acheter » introuvable') + ' ' + buyDiag() });
     if (job.delay) await sleep(rand(150, 400));
     await step('buy', 'Clic sur « Acheter »', { phase: 'checkout' });
     job.phase = 'checkout';
