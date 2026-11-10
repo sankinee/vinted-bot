@@ -392,15 +392,12 @@ async function autobuy(msg, origin, siteTab) {
   let tab;
   let winId = null;
   try {
-    // Fenêtre séparée et réduite : rien ne s'affiche à l'écran pendant l'achat.
-    // Taille normale à la création (sinon Vinted passe en mise en page mobile et masque ses boutons),
-    // puis réduction immédiate.
-    const win = await chrome.windows.create({ url, state: 'normal', focused: false, width: 1280, height: 900, left: 0, top: 0 });
-    winId = win.id; tab = win.tabs[0];
-    chrome.windows.update(winId, { state: 'minimized' }).catch(() => {});
-  } catch {
-    try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
-  }
+    // Onglet en arrière-plan (jamais affiché, sans prendre le focus) : contrairement à une fenêtre
+    // réduite, la page y est réellement mise en page, donc les boutons Vinted fonctionnent.
+    const site = siteTab != null ? await chrome.tabs.get(siteTab).catch(() => null) : null;
+    tab = await chrome.tabs.create({ url, active: false, ...(site ? { windowId: site.windowId, index: site.index + 1 } : {}) });
+    chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
+  } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
 
   const result = await new Promise((resolve) => {
     const job = { tabId: tab.id, winId, siteTab, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };
