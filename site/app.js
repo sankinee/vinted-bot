@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '2.7' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '2.8' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -26,11 +26,11 @@ const store = {
 };
 
 const DEFAULTS = {
-  interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
+  interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.7';
-const EXT_MIN = '2.6.0';
+const APP_VERSION = '2.8';
+const EXT_MIN = '2.7.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -47,8 +47,14 @@ const CONDITION = [
 ];
 const STOP = new Set('les des une pour avec sans dans sur par taille homme femme enfant fille garcon mixte neuf neuve tres bon bonne etat porte portee jamais tbe the and for with size new very good men women kids unisex'.split(' '));
 
+// Réglages : passage aux valeurs prudentes (anti-blocage) pour les anciennes installations.
+function loadSettings() {
+  const s = { ...DEFAULTS, ...store.get('settings', {}) };
+  if (!s.safe27) { s.interval = Math.max(s.interval, 6); s.minGap = Math.max(s.minGap, 1500); s.checksPerMin = Math.min(s.checksPerMin, 4); s.safe27 = true; store.set('settings', s); }
+  return s;
+}
 const S = {
-  settings: { ...DEFAULTS, ...store.get('settings', {}) },
+  settings: loadSettings(),
   filters: store.get('filters', []),
   rt: new Map(),
   items: new Map(),
@@ -59,6 +65,8 @@ const S = {
   lastCheck: 0,
   view: 'all',
   monView: '',
+  leader: false,     // un seul onglet Flipdar interroge Vinted
+  cooldown: 0,       // pause imposée par Vinted (ms restantes, vue par l'extension)
   stats: { found: 0, reqTimes: [], lat: [] },
 };
 
@@ -344,7 +352,7 @@ function rt(f) {
 async function scheduler() {
   for (;;) {
     const src = source();
-    if (!S.running || !src) { await sleep(250); continue; }
+    if (!S.running || !src || !S.leader || (S.cooldown > 0 && !S.settings.demo)) { await sleep(250); continue; }
     const now = Date.now();
     const gapLeft = S.lastReq + S.settings.minGap - now;
     let next = null;
@@ -391,6 +399,7 @@ async function poll(f, src) {
 
   if (!res.ok) {
     const limited = res.status === 429 || res.status === 403;
+    if (res.status === 429 && res.retryAfter > 60) { S.cooldown = res.retryAfter * 1000; S.cooldownAt = Date.now(); }
     r.backoff = Math.min(Math.max(r.backoff * 2, limited ? 15000 : 3000), 180000);
     if (res.retryAfter) r.backoff = Math.max(r.backoff, res.retryAfter * 1000);
     r.err = limited ? `Limité par Vinted (${res.status}), pause ${Math.round(r.backoff / 1000)} s`
@@ -534,6 +543,10 @@ function renderAbLog() {
 async function refreshExt() {
   if (S.settings.demo) S.ext = { enabled: true, trusted: true };
   else if (S.bridge) { const r = await Bridge.call({ type: 'abConfig' }, 3000); S.ext = r && r.ok ? r : null; }
+  if (S.bridge) {
+    const v = await Bridge.call({ type: 'version' }, 3000);
+    if (v && v.ok) { S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); }
+  }
   if (S.bridge && !S.extVersion) {
     const v = await Bridge.call({ type: 'version' }, 3000);
     S.extVersion = (v && v.version) || '?';
@@ -917,8 +930,29 @@ setInterval(() => {
     $('#dbInfo').textContent = `${c.sold} ventes réelles connues, ${c.live} annonces en cours de suivi (${c.total} au total). Les données restent dans ton navigateur : exporte-les de temps en temps.`;
   }
   if (tick % 20 === 0) refreshExt();
+  renderCooldown();
 }, 1000);
 addEventListener('beforeunload', () => DB.flush());
+
+/* Un seul onglet actif : les autres onglets Flipdar restent en attente (sinon les requêtes se cumulent). */
+function acquireLeader() {
+  if (!navigator.locks) { S.leader = true; return; }
+  navigator.locks.request('flipdar-leader', { ifAvailable: true }, (lock) => {
+    if (lock) { S.leader = true; renderCooldown(); return new Promise(() => {}); } // garde le verrou tant que l'onglet est ouvert
+    S.leader = false; renderCooldown();
+    toast('Flipdar est déjà ouvert dans un autre onglet : celui-ci reste en attente.');
+    // prendra le relais quand l'autre onglet sera fermé
+    navigator.locks.request('flipdar-leader', () => { S.leader = true; renderCooldown(); toast('Cet onglet prend le relais.'); return new Promise(() => {}); });
+  });
+}
+
+function renderCooldown() {
+  const lbl = $('#srcLabel'); if (!lbl || S.settings.demo) return;
+  const left = S.cooldown ? S.cooldown - (Date.now() - (S.cooldownAt || 0)) : 0;
+  if (left > 0) { lbl.textContent = `Pause Vinted ${Math.ceil(left / 60000)} min`; $('#dot').className = 'dot demo'; }
+  else if (!S.leader) { lbl.textContent = 'En attente (autre onglet actif)'; $('#dot').className = 'dot demo'; }
+  else if (S.bridge) { if (S.cooldown) S.cooldown = 0; lbl.textContent = 'Connecté'; $('#dot').className = 'dot on'; }
+}
 
 /* ================================================================== Démarrage */
 (async () => {
@@ -928,6 +962,7 @@ addEventListener('beforeunload', () => DB.flush());
   renderAbLog();
   renderAbState();
   await DB.open();
+  acquireLeader();
   setTimeout(() => { if (!S.bridge && !S.settings.demo) toast('Extension Flipdar Bridge non détectée : installe-la ou active le mode démo.'); }, 1500);
   scheduler();
 })();

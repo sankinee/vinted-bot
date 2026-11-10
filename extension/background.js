@@ -7,6 +7,48 @@
 const DOMAIN_RE = /^vinted\.(fr|be|es|it|de|nl|pl|pt|lu|at|co\.uk|cz|lt|sk|se|fi|dk|hu|ro|hr|gr|ie|com)$/;
 const refreshing = new Map();
 
+/* ------------------------------------------------------------------ Limiteur global anti-blocage
+   TOUTES les requêtes vers Vinted passent ici, quel que soit le nombre d'onglets Flipdar :
+   écart minimum, plafond par minute, et pause générale (10 min, puis 20, 40, 60) dès que
+   Vinted répond « rate limited ». */
+const RL = { last: 0, times: [], until: 0, strikes: 0, lastTrip: 0 };
+const MIN_SPACING = 1000;   // ms entre deux requêtes
+const MAX_PER_MIN = 30;     // requêtes / minute, tout compris
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+chrome.storage.local.get('rl').then(({ rl }) => { if (rl && rl.until > Date.now()) Object.assign(RL, rl); });
+
+function tripRateLimit() {
+  const now = Date.now();
+  if (now - RL.lastTrip > 2 * 3600000) RL.strikes = 0;
+  RL.strikes++; RL.lastTrip = now;
+  RL.until = Math.max(RL.until, now + Math.min(10 * 60000 * 2 ** (RL.strikes - 1), 60 * 60000));
+  chrome.storage.local.set({ rl: { until: RL.until, strikes: RL.strikes, lastTrip: RL.lastTrip } });
+}
+const cooldownLeft = () => Math.max(0, RL.until - Date.now());
+const limitedResponse = (url) => ({ ok: false, status: 429, url, headers: { get: (h) => (/retry-after/i.test(h) ? String(Math.ceil(cooldownLeft() / 1000)) : '') }, text: async () => '', json: async () => ({}) });
+
+async function gate() {
+  for (;;) {
+    const now = Date.now();
+    if (RL.until > now) return false;
+    RL.times = RL.times.filter((t) => now - t < 60000);
+    const wait = Math.max(RL.last + MIN_SPACING - now, RL.times.length >= MAX_PER_MIN ? RL.times[0] + 60000 - now : 0);
+    if (wait <= 0) { RL.last = now; RL.times.push(now); return true; }
+    await sleepMs(Math.min(wait, 1000));
+  }
+}
+
+async function vfetch(url, opts = {}) {
+  if (!(await gate())) return limitedResponse(url);
+  const r = await fetch(url, opts);
+  if (r.status === 429) { tripRateLimit(); return limitedResponse(url); }
+  if (r.status === 403 || /text\/html/.test(r.headers.get('content-type') || '')) {
+    const peek = await r.clone().text().catch(() => '');
+    if (/you are rate limited|too many requests|access to this site is blocked/i.test(peek.slice(0, 20000))) { tripRateLimit(); return limitedResponse(url); }
+  }
+  return r;
+}
+
 /* ------------------------------------------------------------------ Adresses Vinted
    Vinted change régulièrement ses adresses internes. Ordre d'essai :
    1) adresse apprise en observant le site Vinted (learn.js), 2) adresses connues,
@@ -14,7 +56,13 @@ const refreshing = new Map();
 const DOM_IN_HOST = /vinted\.[a-z.]+$/;
 let EP = { search: null, item: null };
 const dead = new Set();
-const epReady = chrome.storage.local.get('ep').then(({ ep }) => { if (ep) EP = { ...EP, ...ep }; syncLearner(); });
+// Adresses mortes mémorisées 24 h : évite de les réessayer à chaque redémarrage du service worker.
+const saveDead = () => chrome.storage.local.set({ dead: { at: Date.now(), list: [...dead] } });
+const epReady = chrome.storage.local.get(['ep', 'dead']).then(({ ep, dead: d }) => {
+  if (ep) EP = { ...EP, ...ep };
+  if (d && Date.now() - d.at < 86400000) d.list.forEach((u) => dead.add(u));
+  syncLearner();
+});
 
 const SEARCH_CANDIDATES = [
   'https://www.{d}/api/v2/catalog/items',
@@ -71,7 +119,7 @@ function searchUrl(tpl, domain, query) {
 
 async function getJson(url, retry = true) {
   const t0 = Date.now();
-  const r = await fetch(url, { credentials: 'include', headers: { accept: 'application/json, text/plain, */*' }, cache: 'no-store' });
+  const r = await vfetch(url, { credentials: 'include', headers: { accept: 'application/json, text/plain, */*' }, cache: 'no-store' });
   if ((r.status === 401 || r.status === 403) && retry) {
     await refreshSession(new URL(url).hostname.replace(/^(www|api)\./, ''));
     return getJson(url, false);
@@ -126,7 +174,7 @@ const looksLikeItem = (o) => o && typeof o.id === 'number' && o.id > 99999 && ty
 
 // Demande le flux de données Next.js (en-tête RSC) : beaucoup plus léger que la page HTML complète.
 let rscOff = false;
-const fetchPage = (url) => fetch(url, { credentials: 'include', cache: 'no-store', headers: rscOff ? {} : { RSC: '1' } });
+const fetchPage = (url) => vfetch(url, { credentials: 'include', cache: 'no-store', headers: rscOff ? {} : { RSC: '1' } });
 async function readPage(r) {
   const text = await r.text();
   const rsc = /x-component/.test(r.headers.get('content-type') || '');
@@ -163,7 +211,7 @@ async function search(domain, query) {
     }
     if (res.status === 429) return res;           // limité : ne pas insister
     if (res.status === 404 || res.status === 415 || res.ok) {
-      dead.add(tpl);
+      dead.add(tpl); saveDead();
       if (tpl === EP.search) { EP.search = null; chrome.storage.local.set({ ep: EP }); syncLearner(); }
     }
     last = res;
@@ -218,7 +266,7 @@ function slim(i, domain) {
 
 function refreshSession(domain) {
   if (!refreshing.has(domain)) {
-    const p = fetch(`https://www.${domain}/`, { credentials: 'include' })
+    const p = vfetch(`https://www.${domain}/`, { credentials: 'include' })
       .catch(() => null)
       .finally(() => setTimeout(() => refreshing.delete(domain), 10000));
     refreshing.set(domain, p);
@@ -328,6 +376,7 @@ async function autobuy(msg, origin, siteTab) {
     if (c.count >= c.maxPerDay) return { ok: false, status: 'refused', reason: `Limite de ${c.maxPerDay} achats/jour atteinte` };
     if (c.spent + cap > c.dailyBudget) return { ok: false, status: 'refused', reason: `Budget du jour dépassé (${c.spent.toFixed(2)} / ${c.dailyBudget} €)` };
   }
+  if (cooldownLeft()) return { ok: false, status: 'refused', reason: `Vinted limite ton IP : pause encore ${Math.ceil(cooldownLeft() / 60000)} min` };
   if (buying) return { ok: false, status: 'busy', reason: 'Un achat est déjà en cours' };
   buying = true;
 
@@ -389,11 +438,11 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP }; }
+  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft() }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
     const trusted = c.trusted.includes(origin);
-    return { ok: true, enabled: c.enabled, trusted, ...(trusted ? { maxPerItem: c.maxPerItem, dailyBudget: c.dailyBudget, maxPerDay: c.maxPerDay, spent: c.spent, count: c.count } : {}) };
+    return { ok: true, enabled: c.enabled, trusted, cooldown: cooldownLeft(), ...(trusted ? { maxPerItem: c.maxPerItem, dailyBudget: c.dailyBudget, maxPerDay: c.maxPerDay, spent: c.spent, count: c.count } : {}) };
   }
 
   const domain = String(msg.domain || '');

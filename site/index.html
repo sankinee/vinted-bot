@@ -7,8 +7,8 @@
   <meta name="description" content="Moniteur Vinted temps réel, achat en un clic et estimation de revente.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300c2a8'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%23062b26'/%3E%3C/svg%3E">
   <meta http-equiv="Cache-Control" content="no-cache">
-  <meta name="flipdar-version" content="2.7">
-  <link rel="stylesheet" href="style.css?v=2.7">
+  <meta name="flipdar-version" content="2.8">
+  <link rel="stylesheet" href="style.css?v=2.8">
 </head>
 <body>
   <header class="top">
@@ -63,8 +63,8 @@
       <section class="panel">
         <h2>Réglages</h2>
         <form id="settings" class="settings">
-          <label>Intervalle par moniteur (s) <input name="interval" type="number" min="2" max="120" step="0.5"></label>
-          <label>Écart mini entre requêtes (ms) <input name="minGap" type="number" min="300" max="10000" step="50"></label>
+          <label>Intervalle par moniteur (s) <small>(≥ 6 conseillé)</small> <input name="interval" type="number" min="3" max="120" step="0.5"></label>
+          <label>Écart mini entre requêtes (ms) <input name="minGap" type="number" min="1000" max="10000" step="50"></label>
           <label>Frais d'envoi estimés (€) <input name="shipping" type="number" min="0" step="0.1"></label>
           <label>Seuil « bonne affaire » (% sous la médiane) <input name="highlight" type="number" min="5" max="90" step="1"></label>
           <label>Frais de port max acceptés (€) <input name="maxShipping" type="number" min="0" step="0.5"></label>
@@ -171,6 +171,6 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=2.7"></script>
+  <script src="app.js?v=2.8"></script>
 </body>
 </html>
