@@ -15,10 +15,16 @@
   li { display: flex; justify-content: space-between; gap: 6px; padding: 3px 0; word-break: break-all; }
   li a { color: #ff6b6b; cursor: pointer; text-decoration: none; }
   .on { color: #3fd17a; font-weight: 700; } .off { color: #ff6b6b; font-weight: 700; }
+  .askbox { display: none; } body.ask .askbox { display: block; } body.ask .normal { display: none; }
+  .askbox p { margin: 0 0 8px; } .askbox b { color: #00c2a8; word-break: break-all; }
 </style>
 </head>
 <body>
   <h1>Flipdar Bridge</h1>
+  <div class="box askbox">
+    <p>Autoriser <b id="askOrigin"></b> à acheter sur Vinted avec ton compte, en arrière-plan ?</p>
+    <p class="muted">Les limites ci-dessous s'appliquent toujours (modifiables à tout moment depuis l'icône de l'extension).</p>
+  </div>
   <div class="box">
     <label><span>Achat automatique</span><input id="enabled" type="checkbox"></label>
     <label>Max par article (€)<input id="maxPerItem" type="number" min="1" step="1"></label>
@@ -26,7 +32,11 @@
     <label>Achats max par jour<input id="maxPerDay" type="number" min="1" step="1"></label>
     <div class="muted" id="today"></div>
   </div>
-  <div class="box">
+  <div class="box askbox">
+    <button id="askYes">Autoriser et activer l'achat</button>
+    <button id="askNo" class="ghost">Pas maintenant</button>
+  </div>
+  <div class="box normal">
     <div class="muted">Sites autorisés à déclencher des achats :</div>
     <ul id="trusted"></ul>
     <button id="trust">Autoriser ce site</button>

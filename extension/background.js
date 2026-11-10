@@ -456,6 +456,12 @@ async function handle(msg, sender) {
   }
   if (msg.type === 'itemStatus') return itemStatus(domain, Number(msg.id));
   if (msg.type === 'autobuy') return autobuy(msg, origin, sender.tab && sender.tab.id);
+  if (msg.type === 'requestTrust') {
+    // Fenêtre de l'extension : l'utilisateur autorise lui-même ce site (un site ne peut pas s'autoriser seul).
+    if (!/^https:\/\/[a-z0-9-]+\.github\.io$|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return { ok: false };
+    await chrome.windows.create({ url: chrome.runtime.getURL('popup.html?origin=' + encodeURIComponent(origin)), type: 'popup', width: 340, height: 560, focused: true });
+    return { ok: true };
+  }
   if (msg.type === 'manualBuy') {
     // Ouvre l'article dans un nouvel onglet ; checkout.js y clique « Acheter » (sans payer).
     const id = Number(msg.itemId);

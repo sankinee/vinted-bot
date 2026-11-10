@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '2.8' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '2.9' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.8';
-const EXT_MIN = '2.7.0';
+const APP_VERSION = '2.9';
+const EXT_MIN = '2.8.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -638,13 +638,19 @@ async function buy(id) {
   const rec = S.items.get(id); if (!rec) return;
   const f = S.filters.find((x) => x.id === rec.filterId) || { name: 'Achat manuel' };
   if (S.settings.demo) return abEnqueue(rec, f, true);
-  if (S.bridge && extAtLeast('2.6.0')) {
+  if (!S.bridge) return toast("Extension non connectée : impossible d'acheter en arrière-plan.");
+  if (!extAtLeast('2.8.0')) return toast(`Extension ${S.extVersion || '?'} trop ancienne pour l'achat en arrière-plan : mets-la à jour (2.8.0).`);
+  await refreshExt();
+  if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
+  // Première fois : l'extension ouvre sa fenêtre « Autoriser Flipdar à acheter ? », puis l'achat part tout seul.
+  await Bridge.call({ type: 'requestTrust' }, 5000);
+  toast('Autorise Flipdar dans la fenêtre de l’extension : l’achat démarrera tout seul.');
+  for (let i = 0; i < 60; i++) {
+    await sleep(1000);
     await refreshExt();
-    if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
-    toast("Achat en arrière-plan désactivé : ouvre le popup de l'extension, coche « Achat automatique » et « Autoriser ce site ». Ouverture de l'article à la place.");
+    if (S.ext && S.ext.enabled && S.ext.trusted) { toast('Autorisé ✓ — achat en cours en arrière-plan.'); return abEnqueue(rec, f, true); }
   }
-  if (S.bridge && extAtLeast('2.5.0')) { Bridge.call({ type: 'manualBuy', domain: itemDomain(rec.item), itemId: rec.item.id }, 5000); return; }
-  window.open(buyUrl(itemDomain(rec.item), rec.item.id), '_blank', 'noopener');
+  toast('Achat annulé : Flipdar n’a pas été autorisé.');
 }
 
 async function deepEstimate(id) {
