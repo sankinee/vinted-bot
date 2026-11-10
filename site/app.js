@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '2.9' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '3.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 1500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 4, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.9';
-const EXT_MIN = '2.8.0';
+const APP_VERSION = '3.0';
+const EXT_MIN = '2.9.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -402,7 +402,8 @@ async function poll(f, src) {
     if (res.status === 429 && res.retryAfter > 60) { S.cooldown = res.retryAfter * 1000; S.cooldownAt = Date.now(); }
     r.backoff = Math.min(Math.max(r.backoff * 2, limited ? 15000 : 3000), 180000);
     if (res.retryAfter) r.backoff = Math.max(r.backoff, res.retryAfter * 1000);
-    r.err = limited ? `Limité par Vinted (${res.status}), pause ${Math.round(r.backoff / 1000)} s`
+    r.err = res.captcha ? 'Vérification anti-robot Vinted : ouvre vinted.fr dans un onglet et valide-la'
+      : limited ? `Limité par Vinted (${res.status}), pause ${Math.round(r.backoff / 1000)} s`
       : res.status === 401 ? 'Non connecté à Vinted' : res.error === 'reload' ? 'Extension rechargée : recharge la page' : `Erreur ${[res.status || '', res.error || ''].join(' ').trim()}`;
     r.nextAt = Date.now() + r.backoff;
     return;
@@ -545,7 +546,7 @@ async function refreshExt() {
   else if (S.bridge) { const r = await Bridge.call({ type: 'abConfig' }, 3000); S.ext = r && r.ok ? r : null; }
   if (S.bridge) {
     const v = await Bridge.call({ type: 'version' }, 3000);
-    if (v && v.ok) { S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); }
+    if (v && v.ok) { S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); S.captcha = !!v.captcha; }
   }
   if (S.bridge && !S.extVersion) {
     const v = await Bridge.call({ type: 'version' }, 3000);
@@ -639,12 +640,12 @@ async function buy(id) {
   const f = S.filters.find((x) => x.id === rec.filterId) || { name: 'Achat manuel' };
   if (S.settings.demo) return abEnqueue(rec, f, true);
   if (!S.bridge) return toast("Extension non connectée : impossible d'acheter en arrière-plan.");
-  if (!extAtLeast('2.8.0')) return toast(`Extension ${S.extVersion || '?'} trop ancienne pour l'achat en arrière-plan : mets-la à jour (2.8.0).`);
+  if (!extAtLeast('2.8.0')) return toast(`Extension ${S.extVersion || '?'} trop ancienne pour l'achat en arrière-plan : mets-la à jour (${EXT_MIN}).`);
   await refreshExt();
   if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
   // Première fois : l'extension ouvre sa fenêtre « Autoriser Flipdar à acheter ? », puis l'achat part tout seul.
   await Bridge.call({ type: 'requestTrust' }, 5000);
-  toast('Autorise Flipdar dans la fenêtre de l’extension : l’achat démarrera tout seul.');
+  toast(S.ext && S.ext.trusted && !S.ext.enabled ? 'Achat désactivé dans l’extension : clique « Autoriser et activer l’achat » dans la fenêtre qui s’ouvre.' : 'Autorise Flipdar dans la fenêtre de l’extension : l’achat démarrera tout seul.');
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
     await refreshExt();
@@ -955,7 +956,8 @@ function acquireLeader() {
 function renderCooldown() {
   const lbl = $('#srcLabel'); if (!lbl || S.settings.demo) return;
   const left = S.cooldown ? S.cooldown - (Date.now() - (S.cooldownAt || 0)) : 0;
-  if (left > 0) { lbl.textContent = `Pause Vinted ${Math.ceil(left / 60000)} min`; $('#dot').className = 'dot demo'; }
+  if (S.captcha) { lbl.textContent = 'Vérification Vinted : ouvre vinted.fr'; $('#dot').className = 'dot demo'; }
+  else if (left > 0) { lbl.textContent = `Pause Vinted ${Math.ceil(left / 60000)} min`; $('#dot').className = 'dot demo'; }
   else if (!S.leader) { lbl.textContent = 'En attente (autre onglet actif)'; $('#dot').className = 'dot demo'; }
   else if (S.bridge) { if (S.cooldown) S.cooldown = 0; lbl.textContent = 'Connecté'; $('#dot').className = 'dot on'; }
 }

@@ -44,7 +44,13 @@ async function vfetch(url, opts = {}) {
   if (r.status === 429) { tripRateLimit(); return limitedResponse(url); }
   if (r.status === 403 || /text\/html/.test(r.headers.get('content-type') || '')) {
     const peek = await r.clone().text().catch(() => '');
-    if (/you are rate limited|too many requests|access to this site is blocked/i.test(peek.slice(0, 20000))) { tripRateLimit(); return limitedResponse(url); }
+    const head = peek.slice(0, 30000);
+    if (/you are rate limited|too many requests|access to this site is blocked/i.test(head)) { tripRateLimit(); return limitedResponse(url); }
+    // Vérification anti-robot (DataDome) : il faut la passer une fois dans un onglet Vinted.
+    if (/captcha-delivery\.com|geo\.captcha|datadome|dd_cookie_test|please enable js and disable any ad blocker/i.test(head) && head.length < 25000) {
+      RL.captchaAt = Date.now(); RL.until = Math.max(RL.until, Date.now() + 2 * 60000);
+      return { ...limitedResponse(url), status: 403, captcha: true };
+    }
   }
   return r;
 }
@@ -120,6 +126,7 @@ function searchUrl(tpl, domain, query) {
 async function getJson(url, retry = true) {
   const t0 = Date.now();
   const r = await vfetch(url, { credentials: 'include', headers: { accept: 'application/json, text/plain, */*' }, cache: 'no-store' });
+  if (r.captcha) return { ok: false, status: 403, captcha: true };
   if ((r.status === 401 || r.status === 403) && retry) {
     await refreshSession(new URL(url).hostname.replace(/^(www|api)\./, ''));
     return getJson(url, false);
@@ -187,12 +194,12 @@ async function searchHtml(domain, query) {
   p.delete('per_page');
   const t0 = Date.now();
   const r = await fetchPage(`https://www.${domain}/catalog?${p}`);
-  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0 };
+  if (!r.ok) return { ok: false, status: r.status, retryAfter: Number(r.headers.get('retry-after')) || 0, captcha: !!r.captcha };
   const { corpus, rsc } = await readPage(r);
   const items = extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id);
   if (!items.length) {
-    if (rsc) { rscOff = true; return searchHtml(domain, query); } // flux illisible : repli sur la page complète
-    return { ok: false, status: 0, error: 'aucune annonce lisible dans la page' };
+    if (rsc && !rscOff) { rscOff = true; setTimeout(() => { rscOff = false; }, 10 * 60000); return searchHtml(domain, query); } // repli sur la page complète
+    return { ok: false, status: 0, error: corpus.length < 5000 ? 'page Vinted vide (vérification anti-robot ?) : ouvre vinted.fr dans un onglet' : 'aucune annonce lisible dans la page' };
   }
   return { ok: true, status: r.status, ms: Date.now() - t0, data: { items }, via: rsc ? 'rsc' : 'page' };
 }
@@ -209,7 +216,7 @@ async function search(domain, query) {
       if (EP.search !== tpl) { EP.search = tpl; chrome.storage.local.set({ ep: EP }); syncLearner(); }
       return { ...res, via: 'api' };
     }
-    if (res.status === 429) return res;           // limité : ne pas insister
+    if (res.status === 429 || res.captcha) return res; // limité / vérification : ne pas insister
     if (res.status === 404 || res.status === 415 || res.ok) {
       dead.add(tpl); saveDead();
       if (tpl === EP.search) { EP.search = null; chrome.storage.local.set({ ep: EP }); syncLearner(); }
@@ -438,7 +445,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft() }; }
+  if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
     const trusted = c.trusted.includes(origin);

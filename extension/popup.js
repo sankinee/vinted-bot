@@ -36,7 +36,7 @@ function save() { chrome.storage.local.set({ ab: cfg }); render(); }
 
 $('enabled').onchange = (e) => { cfg.enabled = e.target.checked; save(); };
 for (const k of ['maxPerItem', 'dailyBudget', 'maxPerDay']) $(k).onchange = (e) => { cfg[k] = Math.max(1, Number(e.target.value) || D[k]); save(); };
-$('trust').onclick = () => { if (origin && !cfg.trusted.includes(origin)) cfg.trusted.push(origin); save(); };
+$('trust').onclick = () => { if (origin && !cfg.trusted.includes(origin)) cfg.trusted.push(origin); cfg.enabled = true; save(); };
 $('askYes').onclick = async () => {
   const { ab } = await chrome.storage.local.get('ab'); // relit pour ne pas écraser les compteurs du jour
   cfg = { ...D, ...(ab || {}), ...{ maxPerItem: cfg.maxPerItem, dailyBudget: cfg.dailyBudget, maxPerDay: cfg.maxPerDay } };
