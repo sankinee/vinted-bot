@@ -13,8 +13,8 @@ const DEFAULTS = {
   interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.5';
-const EXT_MIN = '2.5.0';
+const APP_VERSION = '2.6';
+const EXT_MIN = '2.6.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -409,7 +409,7 @@ const AB_LABEL = {
 
 function abCheck(rec, f) {
   const r = f.ab, { item, a } = rec;
-  if (!S.settings.autobuy || !r || !r.on) return null;
+  if (!S.settings.autobuy || !r || !r.on) return null; // (le bouton ⚡ manuel ne passe pas par ces règles)
   if (!(r.maxPrice > 0) || item.price > r.maxPrice) return null;
   if (S.settings.requireSold && (!a || a.src !== 'sold')) return null;
   if (r.minProfit != null && r.minProfit !== '' && (!a || a.profit < Number(r.minProfit))) return null;
@@ -418,18 +418,20 @@ function abCheck(rec, f) {
   return true;
 }
 
-function abEnqueue(rec, f) {
-  if (AB.queue.some((q) => q.rec === rec) || AB.queue.length >= 3) return;
-  AB.queue.push({ rec, f });
+function abEnqueue(rec, f, manual = false) {
+  if (AB.queue.some((q) => q.rec === rec) || (AB.busy && AB.current === rec)) return;
+  if (AB.queue.length >= 3) return manual && toast('3 achats déjà en attente.');
+  if (manual) AB.queue.unshift({ rec, f, manual }); else AB.queue.push({ rec, f });
   abRun();
 }
 
 async function abRun() {
   if (AB.busy || !AB.queue.length) return;
   AB.busy = true;
-  const { rec, f } = AB.queue.shift();
+  const { rec, f, manual } = AB.queue.shift();
+  AB.current = rec;
   const { item } = rec;
-  const entry = { ts: Date.now(), id: item.id, title: item.title, price: item.price, url: item.url, monitor: f.name, status: 'run', dry: S.settings.dryRun };
+  const entry = { ts: Date.now(), id: item.id, title: item.title, price: item.price, url: item.url, monitor: manual ? '⚡ manuel' : f.name, status: 'run', dry: S.settings.dryRun };
   AB.log.unshift(entry); AB.log.length = Math.min(AB.log.length, 60);
   renderAbLog();
   abPanelStart(item, S.settings.dryRun);
@@ -443,7 +445,7 @@ async function abRun() {
   abPanelEnd(entry);
   if (res.status === 'bought') { rec.el.classList.add('bought'); beep(true); beep(true, 0.15); }
   toast(`${AB_LABEL[entry.status]?.[0] || entry.status} · ${item.title}${entry.reason ? ' — ' + entry.reason : ''}`);
-  AB.busy = false;
+  AB.busy = false; AB.current = null;
   if (res.status === 'refused') AB.queue.length = 0;
   abRun();
 }
@@ -600,17 +602,20 @@ function paintAge(e) {
   e.textContent = s < 60 ? `${s | 0} s` : s < 3600 ? `${(s / 60) | 0} min` : s < 86400 ? `${(s / 3600) | 0} h` : `${(s / 86400) | 0} j`;
 }
 
-function buy(id) {
+const extAtLeast = (v) => !!S.extVersion && S.extVersion.localeCompare(v, undefined, { numeric: true }) >= 0;
+
+// ⚡ Acheter : achat complet en arrière-plan (fenêtre Vinted cachée), suivi dans la fenêtre de progression.
+async function buy(id) {
   const rec = S.items.get(id); if (!rec) return;
-  const { item } = rec;
-  if (S.settings.demo) return window.open(item.url, '_blank', 'noopener');
-  if (S.bridge && S.extVersion && S.extVersion.localeCompare('2.5.0', undefined, { numeric: true }) >= 0) {
-    // L'extension ouvre l'article et clique « Acheter » : on arrive directement sur le paiement.
-    Bridge.call({ type: 'manualBuy', domain: itemDomain(item), itemId: item.id }, 5000)
-      .then((r) => { if (!r || !r.ok) window.open(buyUrl(itemDomain(item), item.id), '_blank', 'noopener'); });
-    return;
+  const f = S.filters.find((x) => x.id === rec.filterId) || { name: 'Achat manuel' };
+  if (S.settings.demo) return abEnqueue(rec, f, true);
+  if (S.bridge && extAtLeast('2.6.0')) {
+    await refreshExt();
+    if (S.ext && S.ext.enabled && S.ext.trusted) return abEnqueue(rec, f, true);
+    toast("Achat en arrière-plan désactivé : ouvre le popup de l'extension, coche « Achat automatique » et « Autoriser ce site ». Ouverture de l'article à la place.");
   }
-  window.open(buyUrl(itemDomain(item), item.id), '_blank', 'noopener');
+  if (S.bridge && extAtLeast('2.5.0')) { Bridge.call({ type: 'manualBuy', domain: itemDomain(rec.item), itemId: rec.item.id }, 5000); return; }
+  window.open(buyUrl(itemDomain(rec.item), rec.item.id), '_blank', 'noopener');
 }
 
 async function deepEstimate(id) {

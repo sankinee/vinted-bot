@@ -33,7 +33,8 @@
       || btns.find((b) => usable(b) && /pay|purchase|checkout.*(submit|confirm)/i.test(b.getAttribute('data-testid') || ''));
   }
   const payPresentButDisabled = () => [...document.querySelectorAll('button, [role="button"]')].some((b) => !inChrome(b) && b.offsetParent !== null && PAY_RE.test(labelOf(b)) && !usable(b));
-  const waitFor = async (fn, ms) => { for (let t = 0; t < ms; t += 150) { const v = fn(); if (v) return v; await sleep(150); } return null; };
+  // Attentes basées sur l'horloge (les onglets cachés ralentissent les minuteurs).
+  const waitFor = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(120); } return fn() || null; };
 
   function amounts(s) {
     const out = [];
@@ -87,7 +88,8 @@
 
   async function awaitOutcome(total) {
     let announced3ds = false;
-    for (let i = 0; i < 600; i++) { // jusqu'à 5 min pour laisser le temps de valider le 3-D Secure
+    const end = Date.now() + 300000; // jusqu'à 5 min pour laisser le temps de valider le 3-D Secure
+    while (Date.now() < end) {
       if (SUCCESS_URL.test(location.pathname + location.search) || SUCCESS_RE.test(text())) return report(job.dryRun ? 'dry' : 'bought', { total });
       if (UNAVAILABLE_RE.test(text()) && !announced3ds) return report('unavailable', { reason: 'Article vendu juste avant toi' });
       if (!announced3ds && document.querySelector(THREEDS_SEL)) { announced3ds = true; await step('3ds', 'Valide le paiement sur ton appli bancaire', { phase: 'clicked' }); }
@@ -103,9 +105,10 @@
   if (job.phase === 'open' && ITEM_PAGE.test(location.pathname)) {
     await step('item', "Page de l'article ouverte");
     let buy = null;
-    for (let i = 0; i < 70 && !buy; i++) {
+    const t0 = Date.now();
+    while (!buy && Date.now() - t0 < 12000) {
       buy = findBuy();
-      if (!buy) { if (i > 20 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(150); }
+      if (!buy) { if (Date.now() - t0 > 3000 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article vendu ou réservé' }); await sleep(120); }
     }
     if (!buy) return report('unavailable', { reason: 'Bouton « Acheter » absent : article vendu, réservé ou page modifiée' });
     if (job.delay) await sleep(rand(150, 400));
@@ -115,16 +118,18 @@
   }
 
   // Étape 2 : récapitulatif / paiement (même onglet, après navigation).
-  let pay = null, triedDelivery = false;
-  for (let i = 0; i < 110 && !pay; i++) {
-    if (i > 10 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article déjà vendu ou réservé' });
-    if (i === 6) await step('checkout', 'Récapitulatif de commande');
+  let pay = null, triedDelivery = false, saidCheckout = false;
+  const tc = Date.now();
+  while (!pay && Date.now() - tc < 22000) {
+    const el = Date.now() - tc;
+    if (el > 2000 && UNAVAILABLE_RE.test(text())) return report('unavailable', { reason: 'Article déjà vendu ou réservé' });
+    if (!saidCheckout && (el > 1000 || findPay())) { saidCheckout = true; await step('checkout', 'Récapitulatif de commande'); }
     pay = findPay();
-    if (!pay && !triedDelivery && (payPresentButDisabled() || i === 25)) {
+    if (!pay && !triedDelivery && (payPresentButDisabled() || el > 5000)) {
       triedDelivery = true;
       if (await chooseDelivery()) await step('delivery', 'Mode de livraison sélectionné');
     }
-    if (!pay) await sleep(200);
+    if (!pay) await sleep(150);
   }
   if (!pay) return report('action', { reason: 'Bouton « Payer » indisponible : complète adresse / livraison / carte dans l’onglet Vinted' });
   if (!triedDelivery) await step('delivery', 'Adresse et livraison OK');

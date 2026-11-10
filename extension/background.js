@@ -283,6 +283,15 @@ const jobs = new Map(); // tabId -> job
 const manualTabs = new Map(); // tabId -> { itemId, until } : onglets « ⚡ Acheter » à faire passer au paiement
 let buying = false;
 
+function showJob(job) {
+  if (job.winId != null) chrome.windows.update(job.winId, { state: 'normal', focused: true }).catch(() => {});
+  else chrome.tabs.update(job.tabId, { active: true }).catch(() => {});
+}
+function closeJob(job) {
+  if (job.winId != null) chrome.windows.remove(job.winId).catch(() => {});
+  else chrome.tabs.remove(job.tabId).catch(() => {});
+}
+
 // Envoie l'avancement de l'achat à l'onglet Flipdar (fenêtre de progression).
 function progress(job, step, detail, extra = {}) {
   if (job.siteTab == null) return;
@@ -303,9 +312,9 @@ function finish(job, result) {
   buying = false;
   clearTimeout(job.focusT);
   job.resolve(result);
-  const keepOpen = result.status === 'action' || (result.status === 'bought' && !job.dryRun);
-  if (result.status === 'action') chrome.tabs.update(job.tabId, { active: true }).catch(() => {});
-  if (!keepOpen) setTimeout(() => chrome.tabs.remove(job.tabId).catch(() => {}), job.dryRun ? 800 : 0);
+  // Fenêtre cachée : fermée à la fin, sauf si une action manuelle est nécessaire (on la montre alors).
+  if (result.status === 'action') showJob(job);
+  else setTimeout(() => closeJob(job), result.status === 'bought' ? 1500 : 300);
 }
 
 async function autobuy(msg, origin, siteTab) {
@@ -324,10 +333,17 @@ async function autobuy(msg, origin, siteTab) {
 
   const url = `https://www.${msg.domain}/items/${id}`; // page de l'article, puis clic « Acheter »
   let tab;
-  try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
+  let winId = null;
+  try {
+    // Fenêtre séparée et réduite : rien ne s'affiche à l'écran pendant l'achat.
+    const win = await chrome.windows.create({ url, state: 'minimized', focused: false });
+    winId = win.id; tab = win.tabs[0];
+  } catch {
+    try { tab = await chrome.tabs.create({ url, active: false }); } catch (e) { buying = false; return { ok: false, status: 'error', reason: String(e) }; }
+  }
 
   const result = await new Promise((resolve) => {
-    const job = { tabId: tab.id, siteTab, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };
+    const job = { tabId: tab.id, winId, siteTab, itemId: id, maxTotal: cap, dryRun: !!msg.dryRun, delay: msg.humanDelay !== false, phase: 'open', resolve, t0: Date.now() };
     jobs.set(tab.id, job);
     armTimer(job, 45000);
     progress(job, 'open', 'Ouverture de l’article');
@@ -357,7 +373,9 @@ function onCheckoutMessage(msg, sender, send) {
     if (msg.total) job.total = msg.total;
     if (msg.step) progress(job, msg.step, msg.detail, { total: msg.total });
     // 3-D Secure : on laisse jusqu'à 5 min et on montre l'onglet au bout de 10 s si besoin.
-    if (msg.step === '3ds') { armTimer(job, 300000); job.focusT = setTimeout(() => chrome.tabs.update(job.tabId, { active: true }).catch(() => {}), 10000); }
+    // 3-D Secure : validation dans l'appli bancaire, la fenêtre reste cachée. Si rien au bout de 30 s
+    // (banque qui demande un code sur la page), on l'affiche.
+    if (msg.step === '3ds') { armTimer(job, 300000); job.focusT = setTimeout(() => showJob(job), 30000); }
     else armTimer(job, job.phase === 'clicked' ? 60000 : 45000);
     return send(true);
   }
@@ -398,7 +416,7 @@ async function handle(msg, sender) {
     return { ok: true };
   }
   if (msg.type === 'abFocus') {
-    for (const j of jobs.values()) if (j.siteTab === (sender.tab && sender.tab.id)) { await chrome.tabs.update(j.tabId, { active: true }); return { ok: true }; }
+    for (const j of jobs.values()) if (j.siteTab === (sender.tab && sender.tab.id)) { showJob(j); return { ok: true }; }
     return { ok: false };
   }
   return { ok: false, status: 0, error: 'type inconnu' };
