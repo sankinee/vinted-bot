@@ -1,8 +1,24 @@
 'use strict';
+/* Affiche toute erreur à l'écran au lieu d'échouer en silence. */
+window.addEventListener('error', (e) => showFatal(e.message));
+window.addEventListener('unhandledrejection', (e) => showFatal(e.reason && (e.reason.message || e.reason)));
+function showFatal(msg) {
+  try { const t = document.getElementById('toast'); t.textContent = `Erreur : ${msg} — fais Ctrl+Maj+R ; si ça persiste, envoie une capture.`; t.hidden = false; } catch { /* rien */ }
+}
+/* Page et script de versions différentes (cache) : on recharge une fois sans cache. */
+(() => {
+  const want = document.querySelector('meta[name="flipdar-version"]');
+  const page = want ? want.content : '';
+  if (page !== '2.7' && !sessionStorage.getItem('flipdar-reloaded')) {
+    try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
+    location.replace(location.pathname + '?r=' + Date.now());
+  }
+})();
 /* Flipdar — moniteur Vinted temps réel, base de prix vendus et achat automatique.
    Aucune dépendance : tout tourne dans le navigateur (GitHub Pages + extension Flipdar Bridge). */
 
 const $ = (s, r = document) => r.querySelector(s);
+const on = (sel, ev, fn) => { const e = document.querySelector(sel); if (e) e.addEventListener(ev, fn); else console.warn('Flipdar : élément manquant', sel); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = {
   get(k, d) { try { const v = localStorage.getItem('flipdar:' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
@@ -13,7 +29,7 @@ const DEFAULTS = {
   interval: 4, minGap: 600, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 12, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: true,
 };
-const APP_VERSION = '2.6';
+const APP_VERSION = '2.7';
 const EXT_MIN = '2.6.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
@@ -498,8 +514,8 @@ function abPanelEnd(entry) {
   $('#abpFocus').hidden = S.settings.demo || entry.status !== 'action';
   abp = null;
 }
-$('#abpClose').addEventListener('click', () => { $('#abPanel').hidden = true; });
-$('#abpFocus').addEventListener('click', () => Bridge.call({ type: 'abFocus' }, 3000));
+on('#abpClose', 'click', () => { $('#abPanel').hidden = true; });
+on('#abpFocus', 'click', () => Bridge.call({ type: 'abFocus' }, 3000));
 
 function renderAbLog() {
   const ul = $('#abLog');
@@ -761,7 +777,7 @@ function openRules(f) {
   fm.elements.minDeal.value = f.ab.minDeal ?? 30;
   $('#ruleDlg').showModal();
 }
-$('#ruleDlg').addEventListener('close', () => {
+on('#ruleDlg', 'close', () => {
   if ($('#ruleDlg').returnValue !== 'save' || !ruleFilter) return;
   const e = $('#ruleForm').elements;
   ruleFilter.ab = {
@@ -780,7 +796,7 @@ function updateSource() {
 }
 
 /* ================================================================== Événements */
-$('#addForm').addEventListener('submit', (e) => {
+on('#addForm', 'submit', (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   let spec;
@@ -800,7 +816,7 @@ $('#addForm').addEventListener('submit', (e) => {
   toast(`Moniteur « ${spec.name} » ajouté.`);
 });
 
-$('#monitors').addEventListener('click', (e) => {
+on('#monitors', 'click', (e) => {
   const act = e.target.dataset.act; if (!act) return;
   const f = S.filters.find((x) => x.id === e.target.closest('.mon').dataset.id); if (!f) return;
   if (act === 'toggle') { f.enabled = e.target.checked; e.target.closest('.mon').classList.toggle('off', !f.enabled); if (f.enabled) rt(f).nextAt = 0; saveFilters(); }
@@ -816,14 +832,14 @@ feed.addEventListener('click', (e) => {
   else if (e.target.closest('.estBtn')) deepEstimate(id);
 });
 
-$('#view').addEventListener('click', (e) => {
+on('#view', 'click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   S.view = b.dataset.v;
   for (const x of $('#view').children) x.classList.toggle('on', x === b);
   feed.className = 'feed' + (S.view === 'all' ? '' : ` v-${S.view}`);
 });
 
-$('#monFilter').addEventListener('change', (e) => {
+on('#monFilter', 'change', (e) => {
   S.monView = e.target.value;
   for (const { el: c } of S.items.values()) c.classList.toggle('hidden', !!S.monView && c.dataset.f !== S.monView);
 });
@@ -833,8 +849,8 @@ function setRunning(v) {
   $('#runBtn').textContent = v ? '⏸ Pause' : '▶ Reprendre';
   document.body.classList.toggle('paused', !v);
 }
-$('#runBtn').addEventListener('click', () => setRunning(!S.running));
-$('#clearBtn').addEventListener('click', () => { for (const { el: c } of S.items.values()) c.remove(); S.items.clear(); $('#empty').hidden = false; });
+on('#runBtn', 'click', () => setRunning(!S.running));
+on('#clearBtn', 'click', () => { for (const { el: c } of S.items.values()) c.remove(); S.items.clear(); $('#empty').hidden = false; });
 
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
@@ -861,13 +877,13 @@ for (const form of [$('#settings'), $('#abForm')]) {
 }
 
 // Base de ventes : export / import
-$('#dbExport').addEventListener('click', () => {
+on('#dbExport', 'click', () => {
   const data = JSON.stringify({ v: 1, exported: new Date().toISOString(), items: [...DB.recs.values()] });
   const a = el('a'); a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
   a.download = `flipdar-ventes-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
-$('#dbImport').addEventListener('change', async (e) => {
+on('#dbImport', 'change', async (e) => {
   const file = e.target.files[0]; if (!file) return;
   try {
     const { items } = JSON.parse(await file.text());
