@@ -45,6 +45,15 @@
     const d = els.slice(0, 6).map((b) => `${b.tagName.toLowerCase()}"${labelOf(b).slice(0, 25)}"${b.getAttribute('data-testid') ? '#' + b.getAttribute('data-testid') : ''}${shown(b) ? '' : ' invisible'}${enabled(b) ? '' : ' grisé'}${inChrome(b) ? ' menu' : ''}`);
     return `[diag ${document.readyState}, ${els.length} bouton(s) : ${d.join(' | ') || 'aucun'}]`;
   }
+  // Diagnostic de la page de paiement : boutons, choix de livraison, champs à remplir.
+  function payDiag() {
+    const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((b) => !inChrome(b) && labelOf(b));
+    const d = btns.slice(0, 10).map((b) => `"${labelOf(b).slice(0, 28)}"${b.getAttribute('data-testid') ? '#' + b.getAttribute('data-testid') : ''}${enabled(b) ? '' : ' grisé'}`);
+    const radios = [...document.querySelectorAll('input[type="radio"], [role="radio"]')];
+    const checked = radios.filter((r) => r.checked || r.getAttribute('aria-checked') === 'true').length;
+    const req = [...document.querySelectorAll('input[required], select[required]')].filter((i) => !i.value).length;
+    return `[diag ${location.pathname} · boutons : ${d.join(' | ') || 'aucun'} · choix ${checked}/${radios.length} cochés · champs vides ${req}]`;
+  }
   function findPay() {
     const btns = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')].filter((b) => !inChrome(b));
     const isPay = (b) => PAY_RE.test(labelOf(b)) || /pay|purchase|checkout.*(submit|confirm)/i.test(b.getAttribute('data-testid') || '');
@@ -150,7 +159,7 @@
     }
     if (!pay) await sleep(150);
   }
-  if (!pay) return report('action', { reason: 'Bouton « Payer » indisponible : complète adresse / livraison / carte dans l’onglet Vinted' });
+  if (!pay) return report('action', { reason: 'Bouton « Payer » indisponible : complète adresse / livraison / carte dans l’onglet Vinted ' + payDiag() });
   if (!triedDelivery) await step('delivery', 'Adresse et livraison OK');
 
   await sleep(400); // laisse le récapitulatif se calculer
