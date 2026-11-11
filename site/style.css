@@ -191,3 +191,11 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .presets button { border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 99px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
 .presets button:hover { border-color: var(--accent); }
 .presets button small { color: var(--muted); margin-left: 4px; }
+
+.comps.rich li { align-items: center; }
+.comps.rich img { width: 36px; height: 48px; object-fit: cover; border-radius: 5px; background: var(--panel2); flex: none; }
+.comps.rich .ci { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.comps.rich .ci a { color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comps.rich .ci a:hover { text-decoration: underline; }
+.comps.rich .ci small { color: var(--muted); }
+.comps.rich .cp { font-weight: 700; white-space: nowrap; }

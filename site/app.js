@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '5.3' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '6.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,7 +29,7 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
 };
-const APP_VERSION = '5.3';
+const APP_VERSION = '6.0';
 const EXT_MIN = '5.3.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
@@ -197,6 +197,40 @@ function itemType(title, brand) {
   // « Polo » seul (aussi dans « Polo Ralph Lauren ») : c'est un polo s'il n'y a aucun autre type.
   return words.includes('polo') ? 'polo' : '';
 }
+/* Caractéristiques qui font le prix : gamme de taille, matière, modèle. */
+const COLORS = new Set('noir noire black schwarz nero negro zwart blanc blanche white weiss bianco blanco wit bleu bleue blue blau blu azul blauw marine navy rouge red rot rosso rojo rood vert verte green grun verde groen gris grise grey gray grau grigio beige marron brown braun marrone rose pink rosa jaune yellow gelb giallo orange violet purple kaki khaki bordeaux camel creme cream ecru multicolore clair fonce dark light'.split(' '));
+const GENERIC = new Set('les des une pour avec sans dans sur par taille homme femme enfant fille garcon mixte neuf neuve tres bon bonne etat porte portee jamais tbe the and for with size new very good men women kids unisex de du la le en et ou un col manches manche longues courtes slim regular oversize vintage original authentique authentic bel belle beau superbe magnifique comme top lot taille vendu tag etiquette marque brand fit style coupe modele model von mit und der die das para con del della uomo donna hombre mujer herren damen heren dames sch schone mooie bello bella'.split(' '));
+const MATERIALS = [
+  ['cachemire', /cachemire|cashmere|kaschmir|cachemir/], ['cuir', /\bcuir\b|leather|leder|\bpelle\b|cuero|\bleer\b/],
+  ['daim', /\bdaim\b|suede|wildleder|camoscio/], ['laine', /laine|\bwool|wolle|\blana\b|\bwol\b|merino|lambswool|shetland/],
+  ['soie', /\bsoie\b|\bsilk|seide|\bseta\b|\bseda\b|zijde/], ['lin', /\blin\b|linen|leinen|\blino\b|linnen/],
+];
+const MAT_WORD = { cachemire: 'cachemire', cuir: 'cuir', daim: 'daim', laine: 'laine', soie: 'soie', lin: 'lin' };
+function materialOf(title) { const t = norm(title); for (const [m, re] of MATERIALS) if (re.test(t)) return m; return ''; }
+const MAT_WORDS = /cachemire|cashmere|kaschmir|cachemir|cuir|leather|leder|pelle|cuero|leer|daim|suede|wildleder|camoscio|laine|wool|wolle|lana|wol|merino|lambswool|shetland|soie|silk|seide|seta|seda|zijde|lin|linen|leinen|lino|linnen|coton|cotton|baumwolle|cotone|algodon|katoen/;
+// Gamme de taille : enfant / adulte / chaussures (les prix n'ont rien à voir).
+function sizeGroup(size, title, type) {
+  const s = norm(size), t = norm(title);
+  if (/\b\d+\s*(ans|an|mois|months?|years?|jahre|anni|anos|jaar|maanden)\b|\b\d+\s*cm\b/.test(s)
+    || /\b(enfant|enfants|kids?|garcon|fille|bebe|baby|junior|boys?|girls?|bambin[oa]|nin[oa]|kinder|jongen|meisje)\b/.test(t)) return 'kids';
+  if (type === 'baskets' || type === 'chaussures' || type === 'bottes') return 'shoes';
+  return 'adult';
+}
+// Mots « modèle » : ce qui reste du titre une fois retirés marque, type, couleur, matière et mots génériques
+// (Detroit, Nuptse, 9060, TN, 501…).
+function modelTokens(title, brand) {
+  const bw = new Set(norm(brand).split(/[^a-z0-9]+/));
+  const t = norm(title).replace(/t[\s-]?shirt|tee[\s-]shirt/g, 'tshirt').replace(/air[\s-]max/g, 'airmax').replace(/air[\s-]force/g, 'af1');
+  return [...new Set(t.split(/[^a-z0-9]+/).filter((w) => {
+    if (!w || bw.has(w) || TYPE_OF.has(w) || COLORS.has(w) || GENERIC.has(w) || MAT_WORDS.test(w)) return false;
+    if (/^\d{1,2}$/.test(w)) return false;           // tailles / quantités
+    if (w.length >= 3) return true;
+    return w === 'tn' || /\d/.test(w);              // TN, 2 caractères avec chiffre
+  }))].slice(0, 6);
+}
+const SG_LABEL = { kids: 'taille enfant', adult: 'adulte', shoes: 'chaussures' };
+const PREMIUM = new Set(['cachemire', 'cuir', 'daim', 'soie']);
+
 // Variantes d'une même marque (« Polo Ralph Lauren » = « Ralph Lauren »…).
 const BRAND_ALIAS = [[/ralphlauren|poloralph/, 'ralphlauren'], [/northface/, 'thenorthface'], [/^levis/, 'levis'], [/tommyhilfiger|tommyjeans/, 'tommyhilfiger'], [/^nike/, 'nike'], [/^adidas/, 'adidas']];
 const brandKeyOf = (b) => { const k = norm(b).replace(/[^a-z0-9]/g, ''); for (const [re, v] of BRAND_ALIAS) if (re.test(k)) return v; return k; };
@@ -241,6 +275,7 @@ const DB = {
   },
   put(x, dirty = true) {
     if (x.ty === undefined) { x.ty = itemType(x.t, x.b); x.bk = brandKeyOf(x.b); }
+    if (x.sg === undefined) { x.sg = sizeGroup(x.sz, x.t, x.ty); x.mat = materialOf(x.t); x.mt = modelTokens(x.t, x.b); if (x.pf === undefined) x.pf = true; } // anciennes données : source inconnue
     if (!this.recs.has(x.id)) { let all = this.allByBrand.get(x.bk); if (!all) this.allByBrand.set(x.bk, (all = [])); all.push(x); }
     this.recs.set(x.id, x);
     if (x.state === 'sold') {
@@ -261,11 +296,16 @@ const DB = {
     for (const id of this.dirty) { const x = this.recs.get(id); x ? st.put(x) : st.delete(id); }
     this.dirty.clear();
   },
-  track(item, f) {
-    if (this.recs.has(item.id) || item.price == null) return;
+  // pf = vue dans une recherche filtrée par prix : son prix n'est pas représentatif du marché.
+  track(item, f, { pf = hasPriceFilter(f) } = {}) {
+    if (item.price == null) return;
+    const old = this.recs.get(item.id);
+    if (old) { if (old.pf && !pf) { old.pf = false; this.put(old); } return; }
     const now = Date.now();
+    const ty = itemType(item.title, item.brand);
     this.put({
-      id: item.id, d: itemDomain(item), t: item.title, b: item.brand, bk: brandKeyOf(item.brand), ty: itemType(item.title, item.brand), tok: tokens(item.title, item.brand),
+      id: item.id, d: itemDomain(item), t: item.title, b: item.brand, bk: brandKeyOf(item.brand), ty, tok: tokens(item.title, item.brand),
+      sg: sizeGroup(item.size, item.title, ty), mat: materialOf(item.title), mt: modelTokens(item.title, item.brand), pf: !!pf, ph: item.photo && item.photo.startsWith('https') ? item.photo : '',
       sz: item.size, st: item.status, cat: catOf(f), p: item.price, ls: item.ts || now, fs: now, lc: now, k: 0,
       nc: now + CHECKS[0] * (S.settings.demo ? 1 / 300 : 1), state: 'live',
     });
@@ -299,23 +339,51 @@ const DB = {
     }
     this.put(x);
   },
-  // Comparables : même marque ET même type d'article (pull, veste…) ; à défaut, mots du titre en commun.
-  comps(item, f, limit = 60, index = this.soldByBrand) {
-    const bk = brandKeyOf(item.brand), ty = itemType(item.title, item.brand), tok = new Set(tokens(item.title, item.brand)), cat = catOf(f);
-    if (!bk) return [];
-    const pool = index.get(bk) || [];
-    const scored = [];
-    for (const x of pool) {
-      if (x.id === item.id) continue;
-      let s;
-      if (ty) { if (x.ty !== ty) continue; s = 1; }
-      else { const shared = x.tok.filter((t) => tok.has(t)).length; if (!shared) continue; s = shared / Math.max(1, Math.min(tok.size, x.tok.length)); }
-      if (cat && x.cat === cat) s += 0.2;
-      if (x.sz && x.sz === item.size) s += 0.05;
-      scored.push([s, x]);
+  // Mots « modèle » connus d'une marque : vus dans au moins 3 annonces, sur 1 ou 2 types d'articles
+  // seulement (« detroit » = vestes Carhartt, « 501 » = jeans Levi's, « tn » = baskets Nike). Un mot présent
+  // sur tous les types de la marque (« wip » chez Carhartt) n'est pas un modèle.
+  modelsOf(bk) {
+    const pool = this.allByBrand.get(bk) || [];
+    const c = (this._models ||= new Map()).get(bk);
+    if (c && Math.abs(c.n - pool.length) < Math.max(20, pool.length * 0.1)) return c.set;
+    const df = new Map(), types = new Map();
+    for (const x of pool) for (const w of x.mt || []) {
+      df.set(w, (df.get(w) || 0) + 1);
+      let t = types.get(w); if (!t) types.set(w, (t = new Map())); t.set(x.ty, (t.get(x.ty) || 0) + 1);
     }
-    scored.sort((a, b) => b[0] - a[0] || (b[1].sa || b[1].fs) - (a[1].sa || a[1].fs));
-    return scored.slice(0, limit).map((e) => e[1]);
+    const set = new Set();
+    for (const [w, n] of df) {
+      if (n < 3) continue;
+      const spread = [...types.get(w).values()].filter((k) => k >= 2).length; // types où le mot revient vraiment
+      if (spread <= 2) set.add(w);
+    }
+    this._models.set(bk, { n: pool.length, set });
+    return set;
+  },
+  // Comparables, du plus précis au plus large :
+  //  A : même marque, type, gamme de taille, matière ET modèle
+  //  B : même marque, type, gamme de taille et matière (sans modèle particulier)
+  //  C : même marque, type et gamme de taille
+  comps(item, f, { index = this.allByBrand, unbiased = true, limit = 80, min = MIN_ASK } = {}) {
+    const bk = brandKeyOf(item.brand); if (!bk) return { comps: [], tier: '', models: [] };
+    const ty = itemType(item.title, item.brand), sg = sizeGroup(item.size, item.title, ty), mat = materialOf(item.title);
+    const known = this.modelsOf(bk);
+    const models = modelTokens(item.title, item.brand).filter((w) => known.has(w));
+    const tok = new Set(tokens(item.title, item.brand));
+    const base = (index.get(bk) || []).filter((x) => x.id !== item.id && (!unbiased || x.pf === false) && x.sg === sg
+      && (ty ? x.ty === ty : (x.tok || []).some((t) => tok.has(t))));
+    const recent = (l) => l.sort((p, q) => (q.sa || q.fs) - (p.sa || p.fs)).slice(0, limit);
+    const hasModel = (x) => (x.mt || []).some((w) => known.has(w));
+    if (models.length) {
+      const A = base.filter((x) => x.mat === mat && models.some((m) => (x.mt || []).includes(m)));
+      return { comps: recent(A), tier: 'A', models, sg, mat, ty, strict: true };
+    }
+    const B = base.filter((x) => x.mat === mat && !hasModel(x));
+    if (B.length >= min) return { comps: recent(B), tier: 'B', models, sg, mat, ty };
+    // Matière haut de gamme : jamais mélangée (un pull en cachemire ne se compare pas à du coton).
+    if (PREMIUM.has(mat)) return { comps: recent(B), tier: 'B', models, sg, mat, ty };
+    const C = base.filter((x) => !hasModel(x) && !PREMIUM.has(x.mat));
+    return { comps: recent(C), tier: 'C', models, sg, mat, ty };
   },
   counts() {
     let sold = 0, live = 0;
@@ -406,38 +474,58 @@ function dateItems(items) {
    Ordre : 1) ventes réelles relevées (même marque + même type), 2) annonces similaires vues
    (40e percentile : un prix auquel ça part vraiment), 3) sinon recherche automatique de comparables. */
 const MIN_ASK = 6;
-function confidence(n, st, sold) {
+const OFFER = 0.92; // les acheteurs négocient : un prix demandé se vend en moyenne ~8 % moins cher
+const hasPriceFilter = (f) => { if (!f || !f.params) return false; const p = new URLSearchParams(f.params); return p.has('price_to') || p.has('price_from'); };
+function describe(c, item) {
+  const parts = [item.brand, c.ty || 'article'];
+  if (c.models && c.models.length) parts.push(`« ${c.models[0]} »`);
+  if (c.mat) parts.push(c.mat);
+  parts.push(SG_LABEL[c.sg] || '');
+  return parts.filter(Boolean).join(' · ');
+}
+function confidence(n, st, tier, sold) {
   const cv = st && st.med ? (st.p75 - st.p25) / st.med : 1;
   if (sold) return n >= 8 ? 'haute' : 'moyenne';
-  if (n >= 15 && cv < 0.7) return 'haute';
-  if (n >= 8) return 'moyenne';
+  if (tier !== 'C' && n >= 10 && cv <= 0.6) return 'haute';
+  if (n >= 6 && cv <= 0.9) return 'moyenne';
   return 'faible';
 }
+// Ventes réelles relevées par Flipdar (le meilleur indicateur).
 function soldEstimate(item, f) {
-  const comps = DB.comps(item, f, 40, DB.soldByBrand);
-  if (comps.length < MIN_SOLD) return { n: comps.length, comps };
-  // Prix ramenés à un état « très bon » puis réajustés à l'état de l'article.
-  const st = robustStats(comps.map((x) => x.sp / condFactor(x.st)));
-  const days = robustStats(comps.map((x) => (x.sa - x.ls) / 86400000).filter((d) => d > 0));
-  return { n: st.n, base: st.med, p25: st.p25, p75: st.p75, days: days.med, comps, conf: confidence(st.n, st, true) };
+  const c = DB.comps(item, f, { index: DB.soldByBrand, unbiased: false, limit: 40, min: MIN_SOLD });
+  if (c.comps.length < MIN_SOLD) return { n: c.comps.length, comps: c.comps, tier: c.tier };
+  const st = robustStats(c.comps.map((x) => x.sp / condFactor(x.st)));
+  const days = robustStats(c.comps.map((x) => (x.sa - x.ls) / 86400000).filter((d) => d > 0));
+  return { n: st.n, normal: st.med, quick: quantile(st.sorted, 0.3), p25: st.p25, p75: st.p75, days: days.med, comps: c.comps, tier: c.tier, desc: describe(c, item), conf: confidence(st.n, st, c.tier, true) };
 }
+// Annonces comparables en ligne (prix demandés, jamais issus d'une recherche filtrée par prix).
 function askEstimate(item, f) {
-  const comps = DB.comps(item, f, 80, DB.allByBrand).filter((x) => x.state !== 'sold');
-  if (comps.length < MIN_ASK) return { n: comps.length, comps };
+  let c = DB.comps(item, f);
+  // Modèle trop rare même après la recherche ciblée : on compare à la gamme (même type, matière, taille).
+  if (c.tier === 'A' && c.comps.length < MIN_ASK && Comps.done[Comps.keyOf(item, f, c.models)]) {
+    c = { ...DB.comps({ ...item, title: item.title.replace(new RegExp(c.models.join('|'), 'ig'), ' ') }, f), models: [] };
+    c.tier = 'C';
+  }
+  const comps = c.comps.filter((x) => x.state !== 'sold');
+  if (comps.length < MIN_ASK) return { n: comps.length, comps, tier: c.tier, desc: describe(c, item), models: c.models };
   const st = robustStats(comps.map((x) => x.p / condFactor(x.st)));
-  return { n: st.n, base: quantile(st.sorted, 0.4), p25: st.p25, p75: st.p75, comps, conf: confidence(st.n, st, false) };
+  return { n: st.n, normal: st.med * OFFER, quick: quantile(st.sorted, 0.35) * OFFER, p25: st.p25, p75: st.p75, comps, tier: c.tier, desc: describe(c, item), models: c.models, conf: confidence(st.n, st, c.tier, false) };
 }
 
 function analyse(item, f) {
   const se = soldEstimate(item, f);
   let est, src;
-  if (se.base) { est = se; src = 'sold'; }
-  else { const ae = askEstimate(item, f); if (ae.base) { est = ae; src = 'ask'; } }
-  if (!est) { Comps.want(item, f); return null; } // pas assez de comparables : on va en chercher
-  if (src === 'ask' && est.conf === 'faible') Comps.want(item, f);
-  const resale = Math.max(1, Math.round(est.base * condFactor(item.status)));
+  if (se.normal) { est = se; src = 'sold'; }
+  else {
+    const ae = askEstimate(item, f);
+    if (ae.normal) { est = ae; src = 'ask'; }
+    if (!est || ae.conf === 'faible') Comps.want(item, f, ae.models);
+  }
+  if (!est) return null;
+  const k = condFactor(item.status);
+  const resale = Math.max(1, Math.round(est.normal * k)), quick = Math.max(1, Math.round(Math.min(est.quick, est.normal) * k));
   const cost = buyerTotal(item) + Number(S.settings.shipping || 0);
-  return { resale, profit: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n: est.n, conf: est.conf, days: se.days };
+  return { resale, quick, profit: quick - cost, profitNormal: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n: est.n, conf: est.conf, tier: est.tier, desc: est.desc, days: se.days };
 }
 
 /* Recherche automatique de comparables (« Ralph Lauren pull »…) : une requête au plus toutes les
@@ -445,15 +533,27 @@ function analyse(item, f) {
 const Comps = {
   queue: [], next: 0,
   done: (() => { const d = store.get('compsDone', {}); const now = Date.now(); for (const k of Object.keys(d)) if (now - d[k] > 12 * 3600000) delete d[k]; return d; })(),
-  keyOf(item, f) { return [f ? f.domain : itemDomain(item), brandKeyOf(item.brand), itemType(item.title, item.brand) || tokens(item.title, item.brand)[0] || '', catOf(f)].join('|'); },
-  want(item, f) {
+  // Une recherche par marque + type + modèle + matière (« Carhartt detroit veste », « Ralph Lauren cachemire pull »).
+  keyOf(item, f, models) {
+    const ms = models || modelTokens(item.title, item.brand).filter((w) => DB.modelsOf(brandKeyOf(item.brand)).has(w));
+    return [f ? f.domain : itemDomain(item), brandKeyOf(item.brand), itemType(item.title, item.brand) || tokens(item.title, item.brand)[0] || '', ms[0] || '', materialOf(item.title), catOf(f)].join('|');
+  },
+  want(item, f, models) {
     if (!item.brand) return;
-    const key = this.keyOf(item, f);
+    const key = this.keyOf(item, f, models);
     if (this.done[key] || this.queue.some((q) => q.key === key)) return;
     const ty = itemType(item.title, item.brand);
     const word = ty ? (norm(item.title).split(/[^a-z0-9]+/).find((w) => TYPE_OF.get(w) === ty) || ty) : (tokens(item.title, item.brand)[0] || '');
-    this.queue.push({ key, f, domain: f ? f.domain : itemDomain(item), text: `${item.brand} ${word}`.trim(), cat: catOf(f) });
+    const [, , , model, mat] = key.split('|');
+    const text = [item.brand, model, MAT_WORD[mat] || '', word].filter(Boolean).join(' ');
+    this.queue.push({ key, f, domain: f ? f.domain : itemDomain(item), text, cat: catOf(f) });
     if (this.queue.length > 30) this.queue.shift();
+  },
+  // Les comparables d'une annonce affichée (surtout nouvelle) passent devant.
+  bump(item, f) {
+    const key = this.keyOf(item, f);
+    const i = this.queue.findIndex((q) => q.key === key);
+    if (i > 0) this.queue.unshift(...this.queue.splice(i, 1));
   },
   async run(src) {
     const job = this.queue.shift(); if (!job) return;
@@ -464,7 +564,7 @@ const Comps = {
     S.stats.reqTimes.push(Date.now());
     if (!res.ok) { delete this.done[job.key]; return; }
     dateItems(res.items || []);
-    for (const i of res.items || []) DB.track(i, job.f);
+    for (const i of res.items || []) DB.track(i, job.f, { pf: false }); // recherche sans filtre de prix : prix représentatifs
     refreshEstimates(job.key);
   },
 };
@@ -473,7 +573,7 @@ function refreshEstimates(key) {
   const win = Math.max(1, Number(S.settings.freshMin) || 120) * 60000;
   for (const rec of S.items.values()) {
     const f = S.filters.find((x) => x.id === rec.filterId);
-    if (key && Comps.keyOf(rec.item, f) !== key) continue;
+    if (key && brandKeyOf(rec.item.brand) !== key.split('|')[1]) continue;
     rec.a = analyse(rec.item, f); paintEst(rec);
     if (rec.isNew && !rec.abTried && f && (!rec.item.ts || Date.now() - rec.item.ts < win) && abCheck(rec, f)) { rec.abTried = true; abEnqueue(rec, f); }
   }
@@ -540,32 +640,35 @@ async function scheduler() {
     if (S.inflight > 0) { await sleep(60); continue; }
     const now = Date.now();
     const gapLeft = S.lastReq + S.settings.minGap - now;
+    if (gapLeft > 0) { await sleep(Math.min(gapLeft, 200)); continue; }
     let next = null;
     for (const f of S.filters) { if (!f.enabled) continue; const r = rt(f); if (!r.busy && (!next || r.nextAt < rt(next).nextAt)) next = f; }
     const monWait = next ? rt(next).nextAt - now : Infinity;
-
-    if (gapLeft <= 0 && monWait <= 0) { S.lastReq = now; track(poll(next, src)); continue; }
-    // Tâches de fond (comparables, horloge, suivi des ventes) : seulement avec les requêtes qui restent
-    // une fois les recherches servies, et pas dans les 5 min qui suivent une pause imposée par Vinted.
     const recent = S.stats.reqTimes.filter((t) => now - t < 60000).length;
-    // Mode Sniper : toutes les requêtes vont aux recherches (pas de tâches de fond).
-    const extras = S.settings.demo || (!S.settings.sniper && recent < (S.extCap || 15) - 3 && now > (S.calmUntil || 0));
-    // Recherche de comparables pour les estimations (1 / min au plus).
-    if (extras && gapLeft <= 0 && Comps.queue.length && now >= Comps.next && monWait > S.settings.minGap) {
-      S.lastReq = now; Comps.next = now + (S.settings.demo ? 15000 : 60000); track(Comps.run(src)); continue;
-    }
-    // Relevé de l'horloge Vinted (dernière annonce publiée sur tout le site), dans les temps morts.
-    if (extras && gapLeft <= 0 && now >= Clock.nextProbe && monWait > S.settings.minGap && S.filters.some((f) => f.enabled)) {
-      S.lastReq = now; Clock.nextProbe = now + (Clock.ready() ? 180000 : 40000); track(probeClock(src)); continue;
-    }
-    // Temps mort : vérifie une annonce suivie (vendue ?) si le prochain moniteur n'est pas imminent.
+    const calm = now > (S.calmUntil || 0);
+    // Tâches de fond : comparables (estimations), horloge Vinted, suivi des ventes.
+    // Part RÉSERVÉE : 2 requêtes / min (1 toutes les 3 min en Sniper, comparables seulement), prioritaire
+    // sur les recherches ; au-delà, seulement s'il reste du quota.
+    S.stats.extraTimes = (S.stats.extraTimes || []).filter((t) => now - t < 60000);
+    const lastExtra = S.stats.extraTimes[S.stats.extraTimes.length - 1] || 0;
+    const reserve = calm && (S.settings.demo || (S.settings.sniper ? now - lastExtra > 180000 : S.stats.extraTimes.length < 2 && now - lastExtra > 20000));
+    const spare = calm && !S.settings.sniper && recent < (S.extCap || 15) - 3;
     const perMin = Number(S.settings.checksPerMin) || 0;
-    if (extras && gapLeft <= 0 && perMin > 0 && monWait > S.settings.minGap && now - S.lastCheck >= 60000 / perMin) {
-      const x = DB.nextDue(now);
-      if (x) { S.lastReq = S.lastCheck = now; track(checkItem(x, src)); continue; }
-      S.lastCheck = now - 60000 / perMin + 2000; // rien à vérifier : réessaie dans 2 s
-    }
-    await sleep(Math.max(15, Math.min(Math.max(gapLeft, monWait), 200)));
+    const extra = () => {
+      if (Comps.queue.length && now >= Comps.next) { Comps.next = now + (S.settings.demo ? 15000 : 30000); return Comps.run(src); }
+      if (S.settings.sniper) return null;
+      if (now >= Clock.nextProbe && S.filters.some((f) => f.enabled)) { Clock.nextProbe = now + (Clock.ready() ? 180000 : 40000); return probeClock(src); }
+      if (perMin > 0 && now - S.lastCheck >= 60000 / perMin) {
+        const x = DB.nextDue(now);
+        if (x) { S.lastCheck = now; return checkItem(x, src); }
+        S.lastCheck = now - 60000 / perMin + 2000; // rien à vérifier : réessaie dans 2 s
+      }
+      return null;
+    };
+    if (reserve) { const job = extra(); if (job) { S.lastReq = now; S.stats.extraTimes.push(now); track(job); continue; } }
+    if (monWait <= 0) { S.lastReq = now; track(poll(next, src)); continue; }
+    if (spare && monWait > S.settings.minGap) { const job = extra(); if (job) { S.lastReq = now; S.stats.extraTimes.push(now); track(job); continue; } }
+    await sleep(Math.max(15, Math.min(monWait, 200)));
   }
 }
 
@@ -848,6 +951,7 @@ const feed = $('#feed');
 function addItem(item, f, isNew) {
   if (S.items.has(item.id)) return;
   const rec = { item, filterId: f.id, isNew, seenAt: Date.now(), a: analyse(item, f) };
+  if (!rec.a && isNew) Comps.bump(item, f);
   const c = tpl.cloneNode(true);
   rec.el = c;
   c.dataset.id = item.id;
@@ -891,9 +995,10 @@ function paintEst(rec) {
   c.classList.remove('deal');
   if (!a) { e.textContent = 'Estimation : recherche de comparables…'; e.title = ''; return; }
   const dot = el('i', `conf ${a.conf || 'faible'}`);
-  e.title = `Confiance ${a.conf} — ${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces similaires (même marque et même type)`}`;
-  e.append(dot, `Revente ~${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
-    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ` · ${a.n} similaires`));
+  e.title = `Confiance ${a.conf} — ${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces`} : ${a.desc || ''}\nRevente rapide ${eur(a.quick, 0)} · normale ${eur(a.resale, 0)}`;
+  // Profit calculé sur la revente RAPIDE (prudent).
+  e.append(dot, `Revente ${eur(a.quick, 0)}–${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
+    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ` · ${a.n} comparables`));
   // « Bonne affaire » seulement si l'estimation est assez fiable.
   if (a.deal >= S.settings.highlight && a.profit > 0 && a.conf !== 'faible') { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
 }
@@ -957,70 +1062,57 @@ async function deepEstimate(id) {
   const f = S.filters.find((x) => x.id === rec.filterId);
   const dlg = $('#estDlg'), body = $('#estBody');
   $('#estTitle').textContent = item.title;
-  body.innerHTML = '<p class="note">Analyse des ventes et des annonces comparables…</p>';
+  body.innerHTML = '<p class="note">Recherche des articles comparables (même marque, type, modèle, matière, taille)…</p>';
   dlg.showModal();
 
   const src = source();
-  let ask = null;
   if (src) {
-    // Même recherche ciblée que l'estimation automatique (marque + type d'article).
-    const key = Comps.keyOf(item, f);
+    // Recherche ciblée sans filtre de prix (marque + modèle + matière + type), comme l'estimation automatique.
+    const ae0 = askEstimate(item, f);
+    const key = Comps.keyOf(item, f, ae0.models);
     delete Comps.done[key]; Comps.queue = Comps.queue.filter((q) => q.key !== key);
-    Comps.want(item, f);
+    Comps.want(item, f, ae0.models);
     const job = Comps.queue.find((q) => q.key === key);
-    if (job) {
-      Comps.queue = Comps.queue.filter((q) => q !== job); Comps.queue.unshift(job);
-      const before = new Set(DB.recs.keys());
-      await Comps.run(src);
-      const got = [...DB.recs.values()].filter((x) => !before.has(x.id) || x.cat === job.cat).filter((x) => x.bk === brandKeyOf(item.brand));
-      ask = robustStats(got.map((x) => x.p));
-    }
+    if (job) { Comps.queue = [job, ...Comps.queue.filter((q) => q !== job)]; await Comps.run(src); }
   }
   if (!dlg.open) return;
   rec.a = analyse(item, f); paintEst(rec);
   const se = soldEstimate(item, f), ae = askEstimate(item, f), a = rec.a;
+  const k8 = condFactor(item.status);
 
   body.replaceChildren();
   const kpis = el('div', 'kpis');
   const k = (label, val, cls) => { const d = el('div', 'kpi'); d.append(el('span', '', label), el('b', cls || '', val)); kpis.append(d); };
   k('Prix payé (total)', eur(buyerTotal(item)));
-  k('Revente conseillée', a ? eur(a.resale) : '–');
-  k('Profit estimé', a ? (a.profit >= 0 ? '+' : '') + eur(a.profit) : '–', a && a.profit >= 0 ? 'p' : 'm');
-  k('Médiane VENDUE', se.base ? eur(se.base * condFactor(item.status)) : `${se.n}/${MIN_SOLD} ventes`);
-  k('Délai de vente', Number.isFinite(se.days) ? `${se.days < 1 ? '< 1' : Math.round(se.days)} j` : '–');
-  k(`Prix réaliste (${ae.n} similaires)`, ae.base ? eur(ae.base * condFactor(item.status)) : '–');
+  k('Revente rapide', a ? eur(a.quick) : '–');
+  k('Revente normale', a ? eur(a.resale) : '–');
+  k('Profit (rapide)', a ? (a.profit >= 0 ? '+' : '') + eur(a.profit) : '–', a && a.profit >= 0 ? 'p' : 'm');
+  k('Profit (normal)', a ? (a.profitNormal >= 0 ? '+' : '') + eur(a.profitNormal) : '–', a && a.profitNormal >= 0 ? 'p' : 'm');
   k('Confiance', a ? a.conf : '–', a && a.conf === 'haute' ? 'p' : a && a.conf === 'faible' ? 'm' : '');
   body.append(kpis);
+  const rule = a ? (a.desc || '') : (ae.desc || '');
+  body.append(el('p', 'note', a
+    ? `${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces en ligne`} comparables : ${rule}. ${a.tier === 'A' ? 'Même modèle. ' : a.tier === 'C' ? 'Matière ou modèle non identiques : estimation plus large. ' : ''}`
+    : `Pas assez de comparables pour « ${rule} » (${ae.n}). Ouvre quelques annonces similaires sur Vinted ou réessaie plus tard.`));
 
-  if (ask && ask.n >= 4) {
-    const s = ask.sorted, lo = s[0], hi = s[s.length - 1], B = 16, w = (hi - lo) / B || 1;
-    const bins = new Array(B).fill(0); s.forEach((v) => bins[Math.min(B - 1, Math.floor((v - lo) / w))]++);
-    const max = Math.max(...bins), meBin = Math.min(B - 1, Math.max(0, Math.floor((item.price - lo) / w)));
-    const hist = el('div', 'hist');
-    bins.forEach((c, i) => { const b = el('div', i === meBin ? 'me' : ''); b.style.height = `${(c / max) * 100}%`; b.title = `${eur(lo + i * w, 0)} – ${eur(lo + (i + 1) * w, 0)} : ${c}`; hist.append(b); });
-    const axis = el('div', 'axis'); axis.append(el('span', '', eur(lo, 0)), el('span', '', eur(hi, 0)));
-    body.append(el('div', 'section-t', `Prix des annonces en ligne (${ask.n})`), hist, axis);
-  }
-  if (se.comps.length) {
-    const ul = el('ul', 'comps');
-    for (const x of se.comps.slice(0, 8)) {
-      const li = el('li'); const d = (x.sa - x.ls) / 86400000;
-      li.append(el('span', '', `${x.t} · ${x.st || ''}`), el('span', '', `${eur(x.sp, 0)} · ${d < 1 ? '< 1' : Math.round(d)} j`));
+  // Comparables utilisés (photo, prix ramené à l'état de ton article, lien).
+  const list = (se.normal ? se.comps : ae.comps).slice(0, 12);
+  if (list.length) {
+    const ul = el('ul', 'comps rich');
+    for (const x of list) {
+      const li = el('li');
+      const img = el('img'); img.loading = 'lazy'; img.src = safeUrl(x.ph || ''); img.alt = '';
+      const link = el('a', '', x.t); link.href = `https://www.${x.d || 'vinted.fr'}/items/${x.id}`; link.target = '_blank'; link.rel = 'noopener';
+      const info = el('span', 'ci'); info.append(link, el('small', '', [x.st, x.sz].filter(Boolean).join(' · ')));
+      const price = x.state === 'sold' ? `vendu ${eur(x.sp, 0)}` : eur(x.p, 0);
+      li.append(img, info, el('span', 'cp', price));
       ul.append(li);
     }
-    body.append(el('div', 'section-t', `Articles similaires vendus (${se.comps.length})`), ul);
-  } else if (ae.comps.length) {
-    const ul = el('ul', 'comps');
-    for (const x of ae.comps.slice(0, 8)) { const li = el('li'); li.append(el('span', '', `${x.t} · ${x.st || ''}`), el('span', '', eur(x.p, 0))); ul.append(li); }
-    body.append(el('div', 'section-t', `Annonces les plus proches (${ae.comps.length})`), ul);
+    body.append(el('div', 'section-t', se.normal ? 'Ventes réelles comparables' : 'Annonces comparables (prix demandés)'), ul);
   }
   body.append(el('p', 'note',
-    (a && a.src === 'sold'
-      ? `Estimation basée sur ${a.n} ventes réelles relevées par Flipdar (prix final constaté sur la page de l'article vendu). `
-      : a && a.src === 'ask'
-        ? `Pas encore assez de ventes relevées (${se.n}/${MIN_SOLD}) : estimation à partir de ${a.n} annonces similaires (même marque et même type), au prix sous lequel se trouvent 40 % d'entre elles (prix réaliste pour vendre vite). Les ventes réelles prendront le relais. `
-        : `Peu d'annonces similaires : estimation à partir de toute la recherche. `) +
-    `Ajustée à l'état (${condFactor(item.status)}). Coût = total acheteur + ${eur(S.settings.shipping)} d'envoi.`));
+    `Prix ramenés à l'état de ton article (×${k8}). ${a && a.src === 'ask' ? `Revente rapide = prix sous lequel se trouvent 35 % des annonces, normale = prix médian, les deux −8 % (offres des acheteurs). ` : 'Revente rapide = 30 % des ventes les moins chères, normale = vente médiane. '}`
+    + `Profit = revente − (total payé + ${eur(S.settings.shipping)} d'envoi). Seules les annonces vues sans filtre de prix servent de référence.`));
 }
 
 /* Alertes */

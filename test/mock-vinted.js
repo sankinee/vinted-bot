@@ -15,9 +15,20 @@ const RATE = 12 / 1000;
 const ADDED_OFFSET = Number(process.env.MOCK_ADDED_OFFSET || 0); // « Ajouté il y a » plus ancien que le numéro (ms)                          // ids Vinted par ms (≈ 12 annonces / s sur toute la plateforme)
 
 const BRANDS = ['Ralph Lauren', 'Nike', 'Lacoste', 'Carhartt', 'Levi\'s', 'Zara'];
-const TYPES = { 'Ralph Lauren': ['Pull', 'Polo', 'Chemise', 'Sweat'], Nike: ['Baskets', 'Sweat', 'Veste'], Lacoste: ['Polo', 'Pull'], Carhartt: ['Veste', 'Pantalon'], 'Levi\'s': ['Jean'], Zara: ['Robe', 'Manteau'] };
-const BASE = { Pull: 35, Polo: 25, Chemise: 22, Sweat: 30, Baskets: 45, Veste: 50, Pantalon: 30, Jean: 25, Robe: 15, Manteau: 40 };
+// Variantes réalistes : chaque annonce a une VALEUR DE MARCHÉ (prix auquel elle se vend vraiment)
+// qui dépend de la marque, du type, du modèle, de la matière, de la taille (enfant) et de l'état.
+// Le prix demandé = valeur × bruit (vendeurs trop gourmands ou pressés).
+const VARIANTS = {
+  'Ralph Lauren': [['Pull', '', 35], ['Pull', 'en laine', 48], ['Pull', 'cachemire', 85], ['Polo', '', 25], ['Chemise', '', 22], ['Sweat', '', 30]],
+  Nike: [['Baskets', '', 40], ['Baskets', 'TN', 75], ['Baskets', 'Air Max 90', 55], ['Sweat', '', 28], ['Veste', '', 40]],
+  Lacoste: [['Polo', '', 22], ['Pull', '', 35]],
+  Carhartt: [['Veste', '', 50], ['Veste', 'Detroit', 115], ['Pantalon', '', 30]],
+  'Levi\'s': [['Jean', '501', 28], ['Jean', '', 18]],
+  Zara: [['Robe', '', 14], ['Manteau', '', 38]],
+};
 const STATES = ['Neuf avec étiquette', 'Neuf sans étiquette', 'Très bon état', 'Bon état', 'Satisfaisant'];
+const COND = { 'Neuf avec étiquette': 1.15, 'Neuf sans étiquette': 1.05, 'Très bon état': 1, 'Bon état': 0.85, 'Satisfaisant': 0.65 };
+const rnd = (n) => { let t = (n * 0x6D2B79F5 + 0x9E3779B9) >>> 0; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; // mulberry32
 
 const items = new Map();
 const t0 = Date.now();
@@ -26,21 +37,26 @@ const idAt = (t) => Math.round(idAt0 + (t - t0) * RATE);
 let seq = 0;
 function makeItem(createdAt, extra = {}) {
   const brand = BRANDS[seq % BRANDS.length];
-  const types = TYPES[brand];
-  const type = types[Math.floor(seq / BRANDS.length) % types.length];
-  const status = STATES[seq % STATES.length];
-  const base = BASE[type];
-  const price = Math.max(3, Math.round(base * (0.4 + ((seq * 37) % 100) / 100)));
+  const vs = VARIANTS[brand];
+  const [type, variant, base] = vs[Math.floor(seq / BRANDS.length) % vs.length];
+  const status = STATES[Math.floor(rnd(seq + 7) * STATES.length)];
+  const kids = type !== 'Baskets' && rnd(seq + 3) < 0.18; // ~18 % de tailles enfant
+  const size = kids ? `${[4, 6, 8, 10, 12][Math.floor(rnd(seq + 5) * 5)]} ans` : type === 'Baskets' ? String(38 + Math.floor(rnd(seq + 5) * 8)) : ['S', 'M', 'L', 'XL'][Math.floor(rnd(seq + 5) * 4)];
+  const fair = Math.round(base * COND[status] * (kids ? 0.45 : 1) * 100) / 100;
+  // Prix demandé : de -30 % (vendeur pressé) à +60 % (trop gourmand), plus souvent au-dessus.
+  const price = Math.max(3, Math.round(fair * (0.7 + 0.9 * rnd(seq + 11) ** 1.6)));
   const id = idAt(createdAt) + (seq % 7);
   seq++;
-  const it = { id, createdAt, brand, type, status, price, size: ['S', 'M', 'L', 'XL'][seq % 4], sold: false, title: `${type} ${brand} ${['bleu', 'marine', 'gris', 'rouge'][seq % 4]}`, ...extra };
+  const color = ['bleu', 'marine', 'gris', 'rouge'][seq % 4];
+  const title = `${type} ${brand}${variant ? ' ' + variant : ''} ${color}${kids ? ' enfant' : ''}`;
+  const it = { id, createdAt, brand, type, status, price, fair, size, sold: false, title, ...extra };
   items.set(id, it);
   return it;
 }
 // Historique : 3 jours d'annonces.
 for (let t = t0 - 3 * 86400000; t < t0 - 60000; t += 60000) makeItem(t);
 // Une partie des anciennes annonces est vendue (pour le suivi des ventes).
-for (const it of items.values()) { if (it.createdAt < t0 - 3600000 && ((it.id * 2654435761) >>> 0) % 100 < 25) { it.sold = true; it.soldPrice = Math.round(it.price * 0.9); } }
+for (const it of items.values()) { if (it.createdAt < t0 - 3600000 && ((it.id * 2654435761) >>> 0) % 100 < 25) { it.sold = true; it.soldPrice = Math.round(it.fair * (0.88 + 0.12 * rnd(it.id))); } }
 // Nouvelles annonces en continu.
 setInterval(() => { makeItem(Date.now()); if (Math.random() < 0.5) makeItem(Date.now()); }, 4000);
 
@@ -122,6 +138,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     if (u.pathname === '/__mock/sell') { const it = items.get(Number(u.searchParams.get('id'))); if (it) it.sold = true; return send(res, 200, 'text/plain', it ? 'ok' : 'no'); }
     if (u.pathname === '/__mock/paid') { const it = items.get(Number(u.searchParams.get('id'))); if (it) { it.sold = true; it.soldPrice = it.price; it.paid = true; } return send(res, 200, 'text/plain', 'ok'); }
     if (u.pathname === '/__mock/state') return send(res, 200, 'application/json', JSON.stringify({ requests: STATE.requests.slice(-400), paid: [...items.values()].filter((i) => i.paid).map((i) => i.id), newest: Math.max(...items.keys()) }));
+    if (u.pathname === '/__mock/fair') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = it.fair; } return send(res, 200, 'application/json', JSON.stringify(out)); }
     if (u.pathname === '/__mock/ages') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = +((Date.now() - it.createdAt + ADDED_OFFSET) / 60000).toFixed(1); } return send(res, 200, 'application/json', JSON.stringify(out)); }
     if (u.pathname === '/__mock/item') { const it = [...items.values()].find((i) => !i.sold && i.createdAt < Date.now() - 60000 && i.brand === (u.searchParams.get('brand') || 'Ralph Lauren')); return send(res, 200, 'application/json', JSON.stringify(it)); }
   }

@@ -64,8 +64,10 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   const real = JSON.parse(await fetchInsecure('https://www.vinted.fr/__mock/ages?ids=' + cards.map((c) => c.id).join(',')));
   const errMin = cards.filter((c) => /~?(\d+) min/.test(c.pub)).map((c) => Math.abs(Number(c.pub.match(/(\d+) min/)[1]) - real[c.id]));
   assert(errMin.length >= 3 && Math.max(...errMin) <= 2, `« ajouté il y a » fidèle à Vinted (écart max ${Math.max(...errMin).toFixed(1)} min sur ${errMin.length} annonces)`);
+  // Les estimations arrivent au fil des recherches de comparables (2 / min) : on attend jusqu'à 6 min.
+  await p.waitForFunction(() => { const e = [...document.querySelectorAll('.card .est')]; return e.length && e.filter((x) => /Revente \d/.test(x.textContent)).length >= e.length * 0.8; }, null, { timeout: 360000, polling: 3000 }).catch(() => {});
   const ests = await p.$$eval('.card .est', (a) => a.map((x) => x.textContent));
-  assert(ests.filter((x) => /Revente ~\d+/.test(x)).length >= ests.length * 0.8, `estimations présentes (${ests[0]})`);
+  assert(ests.filter((x) => /Revente \d/.test(x)).length >= ests.length * 0.8, `estimations présentes (${ests[0]})`);
 
   {
     const st = await mockState(), now = Date.now();
