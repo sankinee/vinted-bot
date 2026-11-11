@@ -682,15 +682,18 @@ async function itemStatus(domain, id, wantTs = false) {
   if (!r.ok) return { ok: false, status: r.status };
   if (r.url && !new RegExp(`/items/${id}`).test(r.url)) return { ok: true, state: 'gone', price: null, via: 'page' }; // redirigé ailleurs
   const { corpus, rsc, html } = await readPage(r);
+  // Une page article peut contenir plusieurs objets pour la même annonce (« articles similaires »…) :
+  // on prend celui qui porte l'état de vente.
   const objs = extractObjects(corpus, (o) => o && Number(o.id) === id);
-  let ts = (objs[0] && tsOf(objs[0], objs[0].photo)) || (html ? tsFromText(html) : null);
+  const full = objs.find((o) => 'is_closed' in o || 'item_closing_action' in o || 'is_reserved' in o || 'is_sold' in o);
+  let ts = (objs[0] && objs.map((o) => tsOf(o, o.photo)).find(Boolean)) || (html ? tsFromText(html) : null);
   if (!ts && wantTs && rsc) {
     // Le flux de données ne contient pas la date : on lit le texte « Ajouté il y a… » de la page complète.
     const r2 = await vfetch(`https://www.${domain}/items/${id}`, { credentials: 'include', cache: 'no-store' });
     if (r2.ok) ts = tsFromText(await r2.text());
   }
-  if (objs.length) return { ok: true, via: rsc ? 'rsc' : 'page', ts, ...statusFromJson(objs[0]) };
-  return { ok: true, via: 'page', ts, ...statusFromHtml(html || corpus) };
+  if (full) return { ok: true, via: rsc ? 'rsc' : 'page', ts, ...statusFromJson(full) };
+  return { ok: true, via: rsc ? 'rsc' : 'page', ts, ...statusFromHtml(html || corpus) };
 }
 
 /* ------------------------------------------------------------------ Achat automatique */

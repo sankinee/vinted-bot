@@ -255,3 +255,5 @@ dialog::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(3px); }
   .hint { display: none; }
 }
 body.drawer .scrim { opacity: 1; pointer-events: auto; }
+
+.card.flash { box-shadow: 0 0 0 2px var(--accent), 0 0 30px rgba(37, 208, 196, .45); }

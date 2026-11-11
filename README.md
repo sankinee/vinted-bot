@@ -42,6 +42,7 @@ Trois verrous, tous nécessaires :
 3. **Règles par moniteur** : bouton ⚡ dans la liste des moniteurs.
 
 Avant de cliquer « Payer », l'extension vérifie que le total affiché (frais + port compris) ne dépasse pas prix TTC + « frais de port max ». Sinon elle annule.
+Garde-fous (8.1) : cliquer sur une notification bureau **montre** l'annonce dans le fil, sans jamais acheter ; le raccourci <kbd>B</kbd> demande une confirmation quand la simulation est désactivée ; un achat interrompu par un rechargement de page apparaît « Interrompu » dans le journal.
 Prérequis côté Vinted : adresse, mode de livraison et carte déjà enregistrés. Si ta banque demande une validation 3-D Secure, l'onglet passe au premier plan pour que tu valides.
 
 ## Base de ventes

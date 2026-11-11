@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '8.0' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '8.1' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,8 +29,8 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false, useTab: false,
 };
-const APP_VERSION = '8.0';
-const EXT_MIN = '7.0.0';
+const APP_VERSION = '8.1';
+const EXT_MIN = '7.0.0'; // 8.1.0 conseillée (détection des ventes plus fiable)
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -39,11 +39,11 @@ const MAX_DB = 30000;
 const CHECKS = [30, 120, 360, 720, 1440, 2880, 5760, 10080, 20160].map((m) => m * 60000);
 // Coefficient de prix selon l'état de l'article.
 const CONDITION = [
-  [/neuf avec|new with tags|nuevo con|nuovo con|neu mit/i, 1.15],
-  [/neuf sans|new without|nuevo sin|nuovo senza|neu ohne/i, 1.05],
-  [/très bon|very good|muy bueno|ottime|sehr gut/i, 1.0],
-  [/bon état|good|bueno|buone|gut/i, 0.85],
-  [/satisfaisant|satisfactory|satisfactorio|discret|zufrieden/i, 0.65],
+  [/neuf avec|new with tags|nuevo con|nuovo con|neu mit|nieuw met|nowy z metk/i, 1.15],
+  [/neuf sans|new without|nuevo sin|nuovo senza|neu ohne|nieuw zonder|nowy bez/i, 1.05],
+  [/très bon|very good|muy bueno|ottime|sehr gut|zeer goed|bardzo dobry/i, 1.0],
+  [/bon état|good|bueno|buone|gut|goed|dobry/i, 0.85],
+  [/satisfaisant|satisfactory|satisfactorio|discret|zufrieden|redelijk|zadowalaj/i, 0.65],
 ];
 const STOP = new Set('les des une pour avec sans dans sur par taille homme femme enfant fille garcon mixte neuf neuve tres bon bonne etat porte portee jamais tbe the and for with size new very good men women kids unisex'.split(' '));
 
@@ -202,14 +202,22 @@ function itemType(title, brand) {
 const KNOWN_BRANDS = ("Polo Ralph Lauren|Ralph Lauren|Lauren Ralph Lauren|Lacoste|Nike|Jordan|Adidas|Carhartt WIP|Carhartt|Stone Island|The North Face|North Face|Arc'teryx|Arcteryx|Patagonia|Burberry|Moncler|Barbour|UGG|Levi's|Levis|Stüssy|Stussy|New Balance|Salomon|Tommy Hilfiger|Tommy Jeans|Calvin Klein|Hugo Boss|Boss|Zara|H&M|Uniqlo|Supreme|Palace|Corteiz|Trapstar|Dior|Gucci|Prada|Louis Vuitton|Chanel|Hermès|Hermes|Balenciaga|Saint Laurent|Yves Saint Laurent|Celine|Loewe|Miu Miu|Jacquemus|Ami Paris|Ami|Sandro|Maje|The Kooples|Kenzo|Fred Perry|Napapijri|Timberland|Dr. Martens|Dr Martens|Converse|Vans|Asics|Puma|Reebok|Yeezy|Brunello Cucinelli|Loro Piana|Zadig & Voltaire|Zadig et Voltaire|Isabel Marant|Sézane|Sezane|Massimo Dutti|COS|Arket|Weekday|Champion|Dickies|Ellesse|Fila|Kappa|Lyle & Scott|Paul Smith|Hackett|Gant|Diesel|G-Star|Guess|Michael Kors|Longchamp|Coach|Furla|Mango|Bershka|Pull&Bear|Stradivarius|Shein|Primark|Kiabi|Jules|Celio|Petit Bateau|Jacadi|Bonpoint|Sergent Major|Okaïdi|Catimini|Canada Goose|Woolrich|Peak Performance|Columbia|Quechua|Decathlon|Hoka|On Running|Birkenstock|Veja|Clarks|Lacoste Live|Armani|Emporio Armani|Armani Exchange|Versace|Fendi|Givenchy|Valentino|Off-White|Bape|A Bathing Ape|Comme des Garçons|Maison Margiela|Acne Studios|Mulberry|Ted Baker|Superdry|Jack & Jones|Only|Vero Moda|Desigual|Benetton|Lee|Wrangler|Pepe Jeans|Abercrombie|Abercrombie & Fitch|Hollister|American Eagle|Gap|Ralph|Moschino|Max Mara|Marc Jacobs|Kate Spade|Tory Burch|Off White|Represent|Nike ACG|Oakley|Ray-Ban|Rolex|Casio|Seiko").split('|');
 const BRAND_KEYS = KNOWN_BRANDS.map((b) => [b, ' ' + norm(b).replace(/[^a-z0-9]+/g, ' ').trim() + ' ']).sort((x, y) => y[1].length - x[1].length);
 const BRAND_CANON = { 'Lauren Ralph Lauren': 'Ralph Lauren', 'Ralph': 'Ralph Lauren', 'North Face': 'The North Face', 'Arcteryx': "Arc'teryx", 'Levis': "Levi's", 'Stussy': 'Stüssy', 'Hermes': 'Hermès', 'Yves Saint Laurent': 'Saint Laurent', 'Dr Martens': 'Dr. Martens', 'Zadig et Voltaire': 'Zadig & Voltaire', 'Sezane': 'Sézane', 'Off White': 'Off-White', 'A Bathing Ape': 'Bape' };
-function findBrand(text) {
+// Marques qui sont aussi des mots courants (« worn only once », « coach », « supreme quality »…) :
+// déduites d'un titre seulement si ta recherche porte justement sur cette marque.
+const AMBIGUOUS = new Set(['Only', 'Lee', 'Gap', 'Ami', 'COS', 'Coach', 'Champion', 'Represent', 'Boss', 'Guess', 'Palace', 'Supreme', 'Jordan', 'Ralph', 'Mango', 'Jules', 'Celio', 'Kappa']);
+function findBrand(text, { strict = false, hint = '' } = {}) {
   const t = ' ' + norm(text).replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
-  for (const [b, k] of BRAND_KEYS) if (t.includes(k)) return BRAND_CANON[b] || b;
+  for (const [b, k] of BRAND_KEYS) {
+    if (!t.includes(k)) continue;
+    const name = BRAND_CANON[b] || b;
+    if (strict && AMBIGUOUS.has(b) && name !== hint) continue;
+    return name;
+  }
   return '';
 }
 const brandHintOf = (f) => (f && f.params ? findBrand(new URLSearchParams(f.params).get('search_text') || '') : '');
 function inferBrands(items, hint) {
-  for (const i of items) if (!i.brand) { i.brand = findBrand(i.title) || hint || ''; if (i.brand) i.brandGuess = true; }
+  for (const i of items) if (!i.brand) { i.brand = findBrand(i.title, { strict: true, hint }) || hint || ''; if (i.brand) i.brandGuess = true; }
 }
 
 /* Caractéristiques qui font le prix : gamme de taille, matière, modèle. */
@@ -387,17 +395,19 @@ const DB = {
   //  A : même marque, type, gamme de taille, matière ET modèle
   //  B : même marque, type, gamme de taille et matière (sans modèle particulier)
   //  C : même marque, type et gamme de taille
-  comps(item, f, { index = this.allByBrand, unbiased = true, limit = 80, min = MIN_ASK } = {}) {
+  comps(item, f, { index = this.allByBrand, unbiased = true, limit = 80, min = MIN_ASK, noModel = false } = {}) {
     const bk = brandKeyOf(item.brand); if (!bk) return { comps: [], tier: '', models: [] };
     const ty = itemType(item.title, item.brand), sg = sizeGroup(item.size, item.title, ty), mat = materialOf(item.title);
     const known = this.modelsOf(bk);
-    const models = modelTokens(item.title, item.brand).filter((w) => known.has(w));
+    const models = noModel ? [] : modelTokens(item.title, item.brand).filter((w) => known.has(w));
     const tok = new Set(tokens(item.title, item.brand));
     const base = (index.get(bk) || []).filter((x) => x.id !== item.id && (!unbiased || x.pf === false) && x.sg === sg
       && (!item.cid || !x.cid || x.cid === item.cid) // même catégorie Vinted quand elle est connue
       && (ty ? x.ty === ty : (x.tok || []).some((t) => tok.has(t))));
     const recent = (l) => l.sort((p, q) => (q.sa || q.fs) - (p.sa || p.fs)).slice(0, limit);
-    const hasModel = (x) => (x.mt || []).some((w) => known.has(w));
+    // Sans modèle précis on écarte les modèles connus (une Detroit fausserait une veste classique),
+    // sauf en repli « noModel » pour un modèle trop rare : on garde alors toute la gamme.
+    const hasModel = noModel ? () => false : (x) => (x.mt || []).some((w) => known.has(w));
     if (models.length) {
       const A = base.filter((x) => x.mat === mat && models.some((m) => (x.mt || []).includes(m)));
       return { comps: recent(A), tier: 'A', models, sg, mat, ty, strict: true };
@@ -544,11 +554,10 @@ function askEstimate(item, f) {
   const searched = Comps.done[Comps.keyOf(item, f, c.models)];
   // Pas assez de comparables précis (après la recherche ciblée) : on élargit pas à pas.
   if (c.comps.length < MIN_ASK && (searched || c.tier !== 'A')) {
-    const plain = { ...item, title: c.models && c.models.length ? item.title.replace(new RegExp(c.models.join('|'), 'ig'), ' ') : item.title };
     const steps = [
-      () => ({ ...DB.comps(plain, f), models: [] }),                                       // même gamme, sans le modèle
-      () => ({ ...DB.comps({ ...plain, cid: null }, f), models: [] }),                     // sans la catégorie Vinted
-      () => ({ ...DB.comps({ ...plain, cid: null }, f, { unbiased: false }), models: [], biased: true }), // + annonces vues dans tes recherches
+      () => ({ ...DB.comps(item, f, { noModel: true }), models: [] }),                                    // même gamme, tous modèles
+      () => ({ ...DB.comps({ ...item, cid: null }, f, { noModel: true }), models: [] }),                  // sans la catégorie Vinted
+      () => ({ ...DB.comps({ ...item, cid: null }, f, { noModel: true, unbiased: false }), models: [], biased: true }), // + annonces de tes recherches
     ];
     for (const step of steps) { if (c.comps.length >= MIN_ASK) break; const d = step(); if (d.comps.length > c.comps.length) c = { ...d, tier: 'C' }; }
   }
@@ -839,7 +848,7 @@ async function poll(f, src) {
 }
 
 /* ================================================================== Achat automatique */
-const AB = { queue: [], busy: false, log: store.get(S.settings.demo ? 'ablog-demo' : 'ablog', []) };
+const AB = { queue: [], busy: false, log: store.get(S.settings.demo ? 'ablog-demo' : 'ablog', []).map((e) => (e.status === 'run' ? { ...e, status: 'error', reason: 'Interrompu (page rechargée)' } : e)) };
 const AB_LABEL = {
   run: ['En cours…', 'run'], dry: ['Simulation OK', 'ok'], bought: ['Acheté ✓', 'ok'], action: ['Action requise', 'warn'],
   unavailable: ['Indisponible', 'bad'], too_expensive: ['Trop cher', 'bad'], refused: ['Refusé', 'bad'], busy: ['Occupé', 'warn'], error: ['Erreur', 'bad'],
@@ -957,13 +966,13 @@ function renderAbLog() {
 async function refreshExt() {
   if (S.settings.demo) S.ext = { enabled: true, trusted: true };
   else if (S.bridge) { const r = await Bridge.call({ type: 'abConfig' }, 3000); S.ext = r && r.ok ? r : null; }
+  let v = null;
   if (S.bridge) {
-    const v = await Bridge.call({ type: 'version' }, 3000);
+    v = await Bridge.call({ type: 'version' }, 3000);
     if (v && v.ok) { if (S.cooldown && !v.cooldown) S.calmUntil = Date.now() + 5 * 60000; S.cooldown = v.cooldown || 0; S.cooldownAt = Date.now(); S.captcha = !!v.captcha; S.extCap = v.cap || 15; }
   }
-  if (S.bridge && !S.extVersion) {
-    const v = await Bridge.call({ type: 'version' }, 3000);
-    S.extVersion = (v && v.version) || '?';
+  if (S.bridge && !S.extVersion && v) {
+    S.extVersion = v.version || '?';
     const old = S.extVersion.localeCompare(EXT_MIN, undefined, { numeric: true }) < 0;
     const e = $('#ver'); e.textContent = `site ${APP_VERSION} · ext ${S.extVersion}${old ? ' (à mettre à jour)' : ''}`; e.classList.toggle('old', old);
     if (old) toast(`Extension ${S.extVersion} trop ancienne : retélécharge flipdar-extension.zip (≥ ${EXT_MIN}).`);
@@ -1038,6 +1047,17 @@ function addItem(item, f, isNew) {
     if (abCheck(rec, f)) { rec.abTried = true; abEnqueue(rec, f); }
     alertNew(rec, f);
   }
+}
+
+// Fait défiler le fil jusqu'à une annonce et la met en évidence.
+function showCard(id) {
+  const rec = S.items.get(id); if (!rec) return;
+  if (rec.el.offsetParent === null) { // masquée par un filtre : on revient sur « Tout »
+    const mf = $('#monFilter'); if (mf.value) { mf.value = ''; mf.dispatchEvent(new Event('change')); }
+    if (S.view !== 'all') $('#view [data-v="all"]').click();
+  }
+  rec.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  rec.el.classList.add('flash'); setTimeout(() => rec.el.classList.remove('flash'), 1800);
 }
 
 function paintEst(rec) {
@@ -1188,7 +1208,8 @@ function alertNew(rec, f) {
   if (S.settings.sound) beep(isDeal);
   if (S.settings.notify && 'Notification' in window && Notification.permission === 'granted' && document.hidden) {
     const n = new Notification(`${eur(item.price)} · ${item.title}`, { body: `${f.name}${a ? ` · revente ~${eur(a.resale, 0)}` : ''}`, icon: safeUrl(item.photo) || undefined, tag: String(item.id) });
-    n.onclick = () => { window.focus(); buy(item.id); n.close(); };
+    // Clic sur la notification : on montre l'annonce (jamais d'achat sans clic sur « Acheter »).
+    n.onclick = () => { window.focus(); n.close(); showCard(item.id); };
   }
   if (isDeal && /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(S.settings.webhook) && !S.settings.demo) {
     fetch(S.settings.webhook, {
@@ -1367,7 +1388,13 @@ on('#clearBtn', 'click', () => { for (const { el: c } of S.items.values()) c.rem
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.code === 'Space') { e.preventDefault(); setRunning(!S.running); }
-  if (e.key === 'b' || e.key === 'B') { const first = [...feed.children].find((c) => c.offsetParent !== null); if (first) buy(Number(first.dataset.id)); }
+  if (e.key === 'b' || e.key === 'B') {
+    const first = [...feed.children].find((c) => c.offsetParent !== null); if (!first) return;
+    const rec = S.items.get(Number(first.dataset.id));
+    // Paiement réel : confirmation obligatoire (une touche ne doit jamais payer par erreur).
+    if (rec && !S.settings.dryRun && !S.settings.demo && !confirm(`Acheter « ${rec.item.title} » (${eur(buyerTotal(rec.item))}) ? Paiement réel.`)) return;
+    buy(Number(first.dataset.id));
+  }
 });
 
 // Réglages (deux formulaires partagent le même objet settings)
