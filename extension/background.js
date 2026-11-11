@@ -455,11 +455,30 @@ async function searchHtml(domain, query) {
     return { ok: true, status: a.r.status, ms: Date.now() - t0, data: { items: [] }, via: a.rsc ? 'rsc' : 'page' }; // recherche sans résultat
   }
   emptyQueries.delete(qKey);
-  return { ok: true, status: a.r.status, ms: Date.now() - t0, data: { items: a.items }, via: a.rsc ? 'rsc' : 'page' };
+  // Vérification sans onglet (1 requête) : la page de résultats complète montre-t-elle plus récent
+  // que le flux rapide ? Au début, toutes les 10 min, dès 2 min sans nouveauté ; 1 / min au plus.
+  const qs = QSTATE.get(qKey) || { maxId: 0, lastNewAt: Date.now() };
+  const top = a.items.reduce((m, i) => Math.max(m, i.id), 0);
+  if (top > qs.maxId) { if (qs.maxId) qs.lastNewAt = Date.now(); qs.maxId = top; }
+  QSTATE.set(qKey, qs);
+  const fr = FRESH.get(qKey), quiet = Date.now() - qs.lastNewAt > 2 * 60000;
+  if (a.rsc && (!fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000)) && Date.now() - (WK.lastVerifyAt || 0) > 60000) {
+    WK.lastVerifyAt = Date.now();
+    const ref = await fetchCatalog(url, false);
+    if (ref.r.ok) {
+      const newer = ref.items.filter((i) => i.id > top).length;
+      const stale = newer >= 2;
+      FRESH.set(qKey, { at: Date.now(), ok: !stale, newer });
+      if (stale) { rscOffUntil = Date.now() + 30 * 60000; a = ref; }
+    }
+  }
+  const f = FRESH.get(qKey);
+  return { ok: true, status: a.r.status, ms: Date.now() - t0, data: { items: a.items }, via: a.rsc ? 'rsc' : 'page', fresh: f ? { ok: f.ok, at: f.at, newer: f.newer } : null };
 }
 
-async function search(domain, query) {
+async function search(domain, query, useTab = false) {
   await epReady;
+  await wkReady;
   if (EP.search) {
     const res = await getJson(searchUrl(EP.search, domain, query));
     if (res.status === 429 || res.captcha) return res;
@@ -467,10 +486,21 @@ async function search(domain, query) {
     // L'adresse ne respecte plus la recherche (ou a disparu) : on l'oublie et on lit la page.
     dead.add(EP.search); saveDead(); EP.search = null; saveEP(); syncLearner();
   }
-  const w = await workerSearch(domain, query).catch(() => null);
-  if (w) return w;
-  maybeDiscover(domain); // repli sans onglet : recherche d'API depuis l'extension (non bloquant)
-  return searchHtml(domain, query); // repli : requête directe de l'extension
+  if (useTab) {
+    // Option : recherches depuis un onglet Vinted réduit (si Vinted sert des résultats en retard à l'extension).
+    const w = await workerSearch(domain, query).catch(() => null);
+    if (w) return w;
+  } else closeWorker();
+  maybeDiscover(domain); // recherche d'une API qui respecte la recherche (au plus toutes les 6 h, non bloquant)
+  return searchHtml(domain, query); // par défaut : directement depuis l'extension, aucune fenêtre
+}
+// Ferme la fenêtre/onglet moteur s'il en reste un (mode sans onglet).
+function closeWorker() {
+  if (WK.tabId == null) return;
+  const t = WK.tabId, w = WK.winId;
+  WK.tabId = null; WK.winId = null; WK.ready = false; saveWK();
+  if (w != null) chrome.windows.remove(w).catch(() => chrome.tabs.remove(t).catch(() => {}));
+  else chrome.tabs.remove(t).catch(() => {});
 }
 
 /* ------------------------------------------------------------------ Config achat auto */
@@ -588,6 +618,7 @@ function slim(i, domain) {
     tsSrc: tsData ? 'data' : tsPhoto ? 'photo' : '',
     user: (i.user && i.user.login) || '',
     favs: i.favourite_count || 0,
+    cid: Number(i.catalog_id || (i.catalog && i.catalog.id) || 0) || null, // catégorie Vinted (si fournie)
     views: i.view_count || 0,
     promoted: !!i.promoted,
   };
@@ -790,7 +821,7 @@ async function handle(msg, sender) {
 
   if (msg.type === 'warmup') { await refreshSession(domain); return { ok: true }; }
   if (msg.type === 'search') {
-    const res = await search(domain, new URLSearchParams(String(msg.query || '')).toString());
+    const res = await search(domain, new URLSearchParams(String(msg.query || '')).toString(), !!msg.tab);
     if (!res.ok) return res;
     // Échantillon brut pour le diagnostic (annonces publiques, sans l'objet vendeur).
     lastRaw = { at: Date.now(), via: res.via, count: (res.data.items || []).length,

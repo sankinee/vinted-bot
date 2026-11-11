@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '6.0' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '7.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -27,10 +27,10 @@ const store = {
 
 const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
-  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false,
+  sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false, useTab: false,
 };
-const APP_VERSION = '6.0';
-const EXT_MIN = '5.3.0';
+const APP_VERSION = '7.0';
+const EXT_MIN = '7.0.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
 const MIN_SOLD = 5;
@@ -97,7 +97,7 @@ const Bridge = {
 };
 
 const Live = {
-  search: (domain, query) => Bridge.call({ type: 'search', domain, query }, 45000), // peut attendre son tour dans l'onglet Vinted
+  search: (domain, query) => Bridge.call({ type: 'search', domain, query, tab: !!S.settings.useTab }, 45000),
   itemStatus: (domain, id, wantTs) => Bridge.call({ type: 'itemStatus', domain, id, wantTs: !!wantTs }),
   autobuy: (p) => Bridge.call({ type: 'autobuy', ...p }, 70000),
 };
@@ -306,6 +306,7 @@ const DB = {
     this.put({
       id: item.id, d: itemDomain(item), t: item.title, b: item.brand, bk: brandKeyOf(item.brand), ty, tok: tokens(item.title, item.brand),
       sg: sizeGroup(item.size, item.title, ty), mat: materialOf(item.title), mt: modelTokens(item.title, item.brand), pf: !!pf, ph: item.photo && item.photo.startsWith('https') ? item.photo : '',
+      cid: item.cid || null, fv: item.favs || 0,
       sz: item.size, st: item.status, cat: catOf(f), p: item.price, ls: item.ts || now, fs: now, lc: now, k: 0,
       nc: now + CHECKS[0] * (S.settings.demo ? 1 / 300 : 1), state: 'live',
     });
@@ -317,10 +318,17 @@ const DB = {
     for (const x of all.slice(0, this.recs.size - MAX_DB * 0.9)) this.remove(x);
     this.flush();
   },
+  // Prochaine annonce à revérifier (vendue ?) : en priorité les comparables (sans filtre de prix) des marques
+  // que tu surveilles, pour obtenir vite des prix VENDUS là où ça compte.
   nextDue(now) {
-    let best = null;
-    for (const x of this.recs.values()) if ((x.state === 'live' || x.state === 'reserved') && x.nc <= now && (!best || x.nc < best.nc)) best = x;
-    return best;
+    const hot = new Set([...S.items.values()].map((r) => brandKeyOf(r.item.brand)));
+    let best = null, bestHot = null;
+    for (const x of this.recs.values()) {
+      if (!(x.state === 'live' || x.state === 'reserved') || x.nc > now) continue;
+      if (!best || x.nc < best.nc) best = x;
+      if (x.pf === false && hot.has(x.bk) && (!bestHot || x.nc < bestHot.nc)) bestHot = x;
+    }
+    return bestHot || best;
   },
   apply(x, res) {
     const now = Date.now(), scale = S.settings.demo ? 1 / 300 : 1;
@@ -371,6 +379,7 @@ const DB = {
     const models = modelTokens(item.title, item.brand).filter((w) => known.has(w));
     const tok = new Set(tokens(item.title, item.brand));
     const base = (index.get(bk) || []).filter((x) => x.id !== item.id && (!unbiased || x.pf === false) && x.sg === sg
+      && (!item.cid || !x.cid || x.cid === item.cid) // même catégorie Vinted quand elle est connue
       && (ty ? x.ty === ty : (x.tok || []).some((t) => tok.has(t))));
     const recent = (l) => l.sort((p, q) => (q.sa || q.fs) - (p.sa || p.fs)).slice(0, limit);
     const hasModel = (x) => (x.mt || []).some((w) => known.has(w));
@@ -483,6 +492,22 @@ function describe(c, item) {
   parts.push(SG_LABEL[c.sg] || '');
   return parts.filter(Boolean).join(' · ');
 }
+// Marge d'erreur (intervalle à ~80 %) : incertitude de la médiane (dispersion des prix / nombre de comparables)
+// + incertitude du modèle (passage prix demandé → prix vendu, comparables pas tout à fait identiques).
+function precision(st, n, tier, sold) {
+  if (!st || !st.med || !n) return null;
+  const se = 0.93 * ((st.p75 - st.p25) / st.med) / Math.sqrt(n);
+  const sys = sold ? 0.06 : tier === 'C' ? 0.17 : 0.12;
+  return Math.round(Math.min(45, Math.max(5, 128 * Math.sqrt(se * se + sys * sys))));
+}
+// Demande : favoris par jour des comparables (et délai de vente quand on a des ventes réelles).
+function demandOf(comps, days) {
+  if (Number.isFinite(days)) return days <= 3 ? 'forte' : days <= 10 ? 'moyenne' : 'faible';
+  const rates = comps.filter((x) => x.fv != null).map((x) => x.fv / Math.max(1, (Date.now() - (x.ls || x.fs)) / 86400000)).sort((p, q) => p - q);
+  if (rates.length < 5) return null;
+  const m = rates[Math.floor(rates.length / 2)];
+  return m >= 3 ? 'forte' : m >= 1 ? 'moyenne' : 'faible';
+}
 function confidence(n, st, tier, sold) {
   const cv = st && st.med ? (st.p75 - st.p25) / st.med : 1;
   if (sold) return n >= 8 ? 'haute' : 'moyenne';
@@ -496,7 +521,7 @@ function soldEstimate(item, f) {
   if (c.comps.length < MIN_SOLD) return { n: c.comps.length, comps: c.comps, tier: c.tier };
   const st = robustStats(c.comps.map((x) => x.sp / condFactor(x.st)));
   const days = robustStats(c.comps.map((x) => (x.sa - x.ls) / 86400000).filter((d) => d > 0));
-  return { n: st.n, normal: st.med, quick: quantile(st.sorted, 0.3), p25: st.p25, p75: st.p75, days: days.med, comps: c.comps, tier: c.tier, desc: describe(c, item), conf: confidence(st.n, st, c.tier, true) };
+  return { n: st.n, normal: st.med, quick: quantile(st.sorted, 0.3), p25: st.p25, p75: st.p75, days: days.med, comps: c.comps, tier: c.tier, desc: describe(c, item), conf: confidence(st.n, st, c.tier, true), pm: precision(st, st.n, c.tier, true) };
 }
 // Annonces comparables en ligne (prix demandés, jamais issus d'une recherche filtrée par prix).
 function askEstimate(item, f) {
@@ -509,7 +534,7 @@ function askEstimate(item, f) {
   const comps = c.comps.filter((x) => x.state !== 'sold');
   if (comps.length < MIN_ASK) return { n: comps.length, comps, tier: c.tier, desc: describe(c, item), models: c.models };
   const st = robustStats(comps.map((x) => x.p / condFactor(x.st)));
-  return { n: st.n, normal: st.med * OFFER, quick: quantile(st.sorted, 0.35) * OFFER, p25: st.p25, p75: st.p75, comps, tier: c.tier, desc: describe(c, item), models: c.models, conf: confidence(st.n, st, c.tier, false) };
+  return { n: st.n, normal: st.med * OFFER, quick: quantile(st.sorted, 0.35) * OFFER, p25: st.p25, p75: st.p75, comps, tier: c.tier, desc: describe(c, item), models: c.models, conf: confidence(st.n, st, c.tier, false), pm: precision(st, st.n, c.tier, false) };
 }
 
 function analyse(item, f) {
@@ -525,7 +550,7 @@ function analyse(item, f) {
   const k = condFactor(item.status);
   const resale = Math.max(1, Math.round(est.normal * k)), quick = Math.max(1, Math.round(Math.min(est.quick, est.normal) * k));
   const cost = buyerTotal(item) + Number(S.settings.shipping || 0);
-  return { resale, quick, profit: quick - cost, profitNormal: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n: est.n, conf: est.conf, tier: est.tier, desc: est.desc, days: se.days };
+  return { resale, quick, profit: quick - cost, profitNormal: resale - cost, deal: Math.round((1 - item.price / resale) * 100), src, n: est.n, conf: est.conf, tier: est.tier, desc: est.desc, days: se.days, pm: est.pm, demand: demandOf(est.comps, se.days) };
 }
 
 /* Recherche automatique de comparables (« Ralph Lauren pull »…) : une requête au plus toutes les
@@ -995,10 +1020,10 @@ function paintEst(rec) {
   c.classList.remove('deal');
   if (!a) { e.textContent = 'Estimation : recherche de comparables…'; e.title = ''; return; }
   const dot = el('i', `conf ${a.conf || 'faible'}`);
-  e.title = `Confiance ${a.conf} — ${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces`} : ${a.desc || ''}\nRevente rapide ${eur(a.quick, 0)} · normale ${eur(a.resale, 0)}`;
+  e.title = `Confiance ${a.conf} — ${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces`} : ${a.desc || ''}\nRevente normale ${eur(a.resale, 0)} (±${a.pm || '?'} %) · rapide ${eur(a.quick, 0)} (sert au profit)${a.demand ? `\nDemande ${a.demand}` : ''}`;
   // Profit calculé sur la revente RAPIDE (prudent).
-  e.append(dot, `Revente ${eur(a.quick, 0)}–${eur(a.resale, 0)} · `, el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
-    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ` · ${a.n} comparables`));
+  e.append(dot, `Revente ~${eur(a.resale, 0)}`, el('span', 'pm', a.pm ? ` ±${a.pm} %` : ''), ' · ', el('span', a.profit >= 0 ? 'p' : 'm', (a.profit >= 0 ? '+' : '') + eur(a.profit, 0)),
+    el('span', 'src', a.src === 'sold' ? ` · ${a.n} vendus` : ` · ${a.n} comp.`), a.demand === 'forte' ? el('span', 'dem', ' · 🔥') : '');
   // « Bonne affaire » seulement si l'estimation est assez fiable.
   if (a.deal >= S.settings.highlight && a.profit > 0 && a.conf !== 'faible') { c.classList.add('deal'); b.textContent = `-${a.deal} %`; }
 }
@@ -1088,7 +1113,9 @@ async function deepEstimate(id) {
   k('Revente normale', a ? eur(a.resale) : '–');
   k('Profit (rapide)', a ? (a.profit >= 0 ? '+' : '') + eur(a.profit) : '–', a && a.profit >= 0 ? 'p' : 'm');
   k('Profit (normal)', a ? (a.profitNormal >= 0 ? '+' : '') + eur(a.profitNormal) : '–', a && a.profitNormal >= 0 ? 'p' : 'm');
-  k('Confiance', a ? a.conf : '–', a && a.conf === 'haute' ? 'p' : a && a.conf === 'faible' ? 'm' : '');
+  k('Confiance', a ? `${a.conf}${a.pm ? ` · ±${a.pm} %` : ''}` : '–', a && a.conf === 'haute' ? 'p' : a && a.conf === 'faible' ? 'm' : '');
+  if (a && a.demand) k('Demande', a.demand === 'forte' ? 'forte 🔥' : a.demand, a.demand === 'forte' ? 'p' : a.demand === 'faible' ? 'm' : '');
+  if (a && Number.isFinite(a.days)) k('Délai de vente', `${a.days < 1 ? '< 1' : Math.round(a.days)} j`);
   body.append(kpis);
   const rule = a ? (a.desc || '') : (ae.desc || '');
   body.append(el('p', 'note', a

@@ -199,3 +199,5 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .comps.rich .ci a:hover { text-decoration: underline; }
 .comps.rich .ci small { color: var(--muted); }
 .comps.rich .cp { font-weight: 700; white-space: nowrap; }
+
+.est .pm { color: var(--muted); }

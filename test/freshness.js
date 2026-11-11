@@ -17,5 +17,6 @@ const { launch, authorize, mockState } = require('./harness');
     const cat = st.requests.filter((r) => r.t > t0 && r.path === '/catalog');
     console.log(`« ${q} » : ${await p.textContent('.mon .s')} | requêtes catalogue : ${cat.length} (rsc ${cat.filter((r) => r.rsc).length}, page ${cat.filter((r) => !r.rsc).length})`);
   }
+  console.log('onglets ouverts par l’extension :', ctx.pages().filter((pg) => /vinted/.test(pg.url())).map((pg) => pg.url()));
   console.log('errs', errs); await ctx.close();
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });

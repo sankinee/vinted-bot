@@ -7,8 +7,8 @@
   <meta name="description" content="Moniteur Vinted temps réel, achat en un clic et estimation de revente.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300c2a8'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%23062b26'/%3E%3C/svg%3E">
   <meta http-equiv="Cache-Control" content="no-cache">
-  <meta name="flipdar-version" content="6.0">
-  <link rel="stylesheet" href="style.css?v=6.0">
+  <meta name="flipdar-version" content="7.0">
+  <link rel="stylesheet" href="style.css?v=7.0">
 </head>
 <body>
   <header class="top">
@@ -78,6 +78,7 @@
           <label>Vérifications de ventes / min <input name="checksPerMin" type="number" min="0" max="6" step="1"></label>
           <label>Webhook Discord <small>(bonnes affaires)</small> <input name="webhook" placeholder="https://discord.com/api/webhooks/…"></label>
           <label class="check"><input name="sniper" type="checkbox"> <b>Mode Sniper</b> : recherche vérifiée toutes les 5 s, tâches de fond coupées (garde 1 seule recherche)</label>
+          <label class="check"><input name="useTab" type="checkbox"> Recherche via un onglet Vinted réduit <small>(seulement si les résultats semblent en retard)</small></label>
           <label class="check"><input name="sound" type="checkbox"> Son à chaque nouvel article</label>
           <label class="check"><input name="notify" type="checkbox"> Notifications bureau</label>
           <label class="check"><input name="demo" type="checkbox"> Mode démo (données fictives)</label>
@@ -180,6 +181,6 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=6.0"></script>
+  <script src="app.js?v=7.0"></script>
 </body>
 </html>

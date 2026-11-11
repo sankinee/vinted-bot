@@ -23,7 +23,7 @@ const { launch, authorize, fetchInsecure } = require('./harness');
       const item = { id: x.id, title: x.t, brand: x.b, size: x.sz, status: x.st, price: x.p, url: '' };
       const fx = S.filters.find((g) => new URLSearchParams(g.params).get('search_text') && x.t.toLowerCase().includes(new URLSearchParams(g.params).get('search_text').split(' ')[0])) || f;
       const a = analyse(item, fx);
-      if (a) out.push({ id: x.id, t: x.t, sz: x.sz, st: x.st, est: a.resale, quick: a.quick ?? null, conf: a.conf, n: a.n });
+      if (a) out.push({ id: x.id, t: x.t, sz: x.sz, st: x.st, est: a.resale, quick: a.quick ?? null, conf: a.conf, n: a.n, pm: a.pm ?? null });
     }
     return out;
   });
@@ -38,6 +38,8 @@ const { launch, authorize, fetchInsecure } = require('./harness');
     console.log(`${label.padEnd(28)} n=${String(list.length).padStart(4)}  erreur médiane ${(med(ape) * 100).toFixed(0).padStart(3)} %  biais ${(med(list.map((r) => r.err)) * 100).toFixed(0).padStart(4)} %  à ±20 % : ${(list.filter((r) => Math.abs(r.err) <= 0.2).length / list.length * 100).toFixed(0)} %`);
   };
   report('TOUT', ev);
+  const withPm = ev.filter((r) => r.pm);
+  if (withPm.length) console.log(`marge d'erreur annoncée : médiane ±${med(withPm.map((r) => r.pm))} % ; vraie valeur DANS la marge annoncée : ${(withPm.filter((r) => Math.abs(r.err) * 100 <= r.pm).length / withPm.length * 100).toFixed(0)} % des cas (objectif ~80 %)`);
   report('confiance haute', ev.filter((r) => r.conf === 'haute'));
   report('tailles enfant', ev.filter((r) => /ans/.test(r.sz)));
   report('cachemire', ev.filter((r) => /cachemire/.test(r.t)));

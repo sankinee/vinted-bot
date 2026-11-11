@@ -26,6 +26,7 @@ const VARIANTS = {
   'Levi\'s': [['Jean', '501', 28], ['Jean', '', 18]],
   Zara: [['Robe', '', 14], ['Manteau', '', 38]],
 };
+const CAT_IDS = { Pull: 1904, Polo: 1905, Chemise: 1906, Sweat: 1907, Baskets: 1242, Veste: 1908, Pantalon: 1909, Jean: 1910, Robe: 1911, Manteau: 1912 };
 const STATES = ['Neuf avec étiquette', 'Neuf sans étiquette', 'Très bon état', 'Bon état', 'Satisfaisant'];
 const COND = { 'Neuf avec étiquette': 1.15, 'Neuf sans étiquette': 1.05, 'Très bon état': 1, 'Bon état': 0.85, 'Satisfaisant': 0.65 };
 const rnd = (n) => { let t = (n * 0x6D2B79F5 + 0x9E3779B9) >>> 0; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; // mulberry32
@@ -73,7 +74,7 @@ function apiItem(it, host) {
       ? { id: it.id + 1, url: `https://${host}/__img/t/03_${it.id}/f800/${Math.floor(it.createdAt / 1000)}.jpeg?s=ab12`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/t/03_${it.id}/310x430/${Math.floor(it.createdAt / 1000)}.webp?s=cd34` }] }
       : { id: it.id + 1, url: `https://${host}/__img/${it.id}.svg`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/${it.id}.svg` }] },
     user: { id: 555000 + (it.id % 1000), login: `vendeur${it.id % 1000}`, last_loged_on_ts: new Date().toISOString() },
-    favourite_count: it.id % 20, view_count: 0,
+    favourite_count: it.id % 20, view_count: 0, catalog_id: CAT_IDS[it.type] + (/ans$/.test(it.size) ? 1000 : 0),
   };
   if (WITH_TS) o.photo.high_resolution = { timestamp: Math.floor(it.createdAt / 1000) };
   return o;
