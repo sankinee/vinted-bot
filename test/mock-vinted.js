@@ -69,7 +69,7 @@ function apiItem(it, host) {
   const o = {
     id: it.id, title: it.title, price: { amount: it.price.toFixed(1), currency_code: 'EUR' },
     total_item_price: { amount: (it.price * 1.05 + 0.7).toFixed(2), currency_code: 'EUR' }, service_fee: { amount: (it.price * 0.05 + 0.7).toFixed(2) },
-    brand_title: it.brand, size_title: it.size, status: it.status, url: `/items/${slug(it)}`, promoted: false,
+    ...(process.env.MOCK_NO_BRAND === '1' ? {} : { brand_title: it.brand }), size_title: it.size, status: it.status, url: `/items/${slug(it)}`, promoted: false,
     photo: PHOTO_TS
       ? { id: it.id + 1, url: `https://${host}/__img/t/03_${it.id}/f800/${Math.floor(it.createdAt / 1000)}.jpeg?s=ab12`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/t/03_${it.id}/310x430/${Math.floor(it.createdAt / 1000)}.webp?s=cd34` }] }
       : { id: it.id + 1, url: `https://${host}/__img/${it.id}.svg`, thumbnails: [{ type: 'thumb310x430', url: `https://${host}/__img/${it.id}.svg` }] },

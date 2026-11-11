@@ -4,137 +4,156 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flipdar</title>
-  <meta name="description" content="Moniteur Vinted temps réel, achat en un clic et estimation de revente.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300c2a8'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%23062b26'/%3E%3C/svg%3E">
+  <meta name="description" content="Moniteur Vinted temps réel et estimation de revente.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2325d0c4'/%3E%3Cpath d='M16 16 L16 4 A12 12 0 0 1 27 12 Z' fill='%230b0d10'/%3E%3C/svg%3E">
   <meta http-equiv="Cache-Control" content="no-cache">
-  <meta name="flipdar-version" content="7.0">
-  <link rel="stylesheet" href="style.css?v=7.0">
+  <meta name="flipdar-version" content="8.0">
+  <link rel="stylesheet" href="style.css?v=8.0">
 </head>
 <body>
+  <!-- ===================== Barre du haut ===================== -->
   <header class="top">
-    <div class="brand"><span class="logo"></span>Flipdar</div>
+    <button class="icon-btn only-narrow" data-open="paneLeft" aria-label="Paramètres">☰</button>
+    <div class="brand"><span class="logo"></span><span>Flipdar</span></div>
+    <div class="status"><i id="dot" class="dot"></i><b id="srcLabel">Hors ligne</b> <small id="ver" class="ver"></small></div>
     <div class="stats" id="stats">
-      <span><i id="dot" class="dot"></i><b id="srcLabel">Hors ligne</b> <small id="ver" class="ver"></small></span>
-      <span>Req/min <b id="rpm">0</b></span>
-      <span>Latence <b id="lat">–</b></span>
-      <span>Trouvés <b id="found">0</b></span>
-      <span title="Articles vendus connus / annonces suivies">Ventes <b id="soldN">0</b> / <b id="trackN">0</b></span>
-      <span id="abState" class="ab-state">Achat auto <b>OFF</b></span>
+      <span class="chip" title="Requêtes vers Vinted sur la dernière minute">⇅ <b id="rpm">0</b>/min</span>
+      <span class="chip" title="Temps de réponse moyen">⏱ <b id="lat">–</b></span>
+      <span class="chip" title="Nouvelles annonces trouvées">✦ <b id="found">0</b></span>
+      <span class="chip" title="Ventes réelles connues / annonces suivies">✓ <b id="soldN">0</b>/<b id="trackN">0</b></span>
+      <span id="abState" class="chip ab-state">Achat <b>OFF</b></span>
     </div>
     <div class="top-actions">
       <button id="runBtn" class="btn">⏸ Pause</button>
       <button id="clearBtn" class="btn ghost">Vider</button>
+      <button class="icon-btn only-narrow" data-open="paneRight" aria-label="Recherches">🔎</button>
     </div>
   </header>
 
-  <div class="layout">
-    <aside class="side">
-      <section class="panel">
-        <h2>Nouveau moniteur</h2>
-        <form id="addForm" autocomplete="off">
-          <label>Lien de recherche Vinted <small>(colle l'URL avec tes filtres)</small>
-            <input name="url" placeholder="https://www.vinted.fr/catalog?search_text=nike%20tn&price_to=40">
-          </label>
-          <div class="or">ou</div>
-          <label>Mots-clés <input name="q" placeholder="ralph lauren pull"></label>
-          <div class="grid2">
-            <label>Prix min <input name="min" type="number" min="0" step="1"></label>
-            <label>Prix max <input name="max" type="number" min="0" step="1"></label>
-          </div>
-          <label>Pays
-            <select name="domain">
-              <option value="vinted.fr">France</option><option value="vinted.be">Belgique</option>
-              <option value="vinted.es">Espagne</option><option value="vinted.it">Italie</option>
-              <option value="vinted.de">Allemagne</option><option value="vinted.nl">Pays-Bas</option>
-              <option value="vinted.pt">Portugal</option><option value="vinted.lu">Luxembourg</option>
-              <option value="vinted.pl">Pologne</option><option value="vinted.co.uk">Royaume-Uni</option>
-            </select>
-          </label>
-          <label>Nom <input name="name" placeholder="optionnel"></label>
-          <button class="btn primary wide" type="submit">+ Ajouter</button>
-        </form>
+  <div class="app">
+    <!-- ===================== Gauche : paramètres ===================== -->
+    <aside class="pane left" id="paneLeft" aria-label="Paramètres">
+      <div class="pane-h"><h2>Paramètres</h2><button class="icon-btn only-narrow" data-close aria-label="Fermer">✕</button></div>
+
+      <section class="sec help" id="help">
+        <h3>Connexion</h3>
+        <p>Flipdar parle à Vinted via l'extension <b>Flipdar Bridge</b>, avec ta propre session Vinted.</p>
+        <ol>
+          <li><a href="flipdar-extension.zip">Télécharge l'extension</a> et dézippe-la.</li>
+          <li><code>chrome://extensions</code> → mode développeur → « Charger l'extension non empaquetée ».</li>
+          <li>Connecte-toi sur Vinted, puis recharge cette page.</li>
+        </ol>
       </section>
 
-      <section class="panel">
-        <h2>Recherches tendance</h2>
-        <p class="note" style="margin:0 0 8px">Un clic = une recherche ajoutée (plus récentes d'abord, prix max pensé pour la revente). Garde 1 à 3 recherches actives pour rester rapide.</p>
-        <div id="presets" class="presets"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Moniteurs <span id="monCount" class="pill">0</span></h2>
-        <ul id="monitors" class="monitors"></ul>
-      </section>
-
-      <section class="panel">
-        <h2>Réglages</h2>
+      <details class="sec" open>
+        <summary>Vitesse & alertes</summary>
         <form id="settings" class="settings">
-          <label>Intervalle par moniteur (s) <small>(≥ 6 conseillé)</small> <input name="interval" type="number" min="3" max="120" step="0.5"></label>
-          <label>Écart mini entre requêtes (ms) <input name="minGap" type="number" min="2000" max="10000" step="100"></label>
-          <label>Frais d'envoi estimés (€) <input name="shipping" type="number" min="0" step="0.1"></label>
-          <label>Seuil « bonne affaire » (% sous la médiane) <input name="highlight" type="number" min="5" max="90" step="1"></label>
-          <label>Ignorer les annonces publiées depuis plus de (min) <small>(remises en ligne)</small> <input name="freshMin" type="number" min="5" max="1440" step="5"></label>
-          <label>Frais de port max acceptés (€) <input name="maxShipping" type="number" min="0" step="0.5"></label>
-          <label>Vérifications de ventes / min <input name="checksPerMin" type="number" min="0" max="6" step="1"></label>
-          <label>Webhook Discord <small>(bonnes affaires)</small> <input name="webhook" placeholder="https://discord.com/api/webhooks/…"></label>
-          <label class="check"><input name="sniper" type="checkbox"> <b>Mode Sniper</b> : recherche vérifiée toutes les 5 s, tâches de fond coupées (garde 1 seule recherche)</label>
-          <label class="check"><input name="useTab" type="checkbox"> Recherche via un onglet Vinted réduit <small>(seulement si les résultats semblent en retard)</small></label>
+          <label class="check big"><input name="sniper" type="checkbox"> <span><b>Mode Sniper</b><small>recherche vérifiée toutes les 5 s (garde 1 à 2 recherches)</small></span></label>
           <label class="check"><input name="sound" type="checkbox"> Son à chaque nouvel article</label>
           <label class="check"><input name="notify" type="checkbox"> Notifications bureau</label>
+          <label>Webhook Discord <small>(bonnes affaires)</small><input name="webhook" placeholder="https://discord.com/api/webhooks/…"></label>
+          <div class="grid2">
+            <label>Intervalle (s)<input name="interval" type="number" min="3" max="120" step="0.5"></label>
+            <label>Écart requêtes (ms)<input name="minGap" type="number" min="2000" max="10000" step="100"></label>
+          </div>
+          <div class="grid2">
+            <label>Envoi estimé (€)<input name="shipping" type="number" min="0" step="0.1"></label>
+            <label>« Bonne affaire » (%)<input name="highlight" type="number" min="5" max="90" step="1"></label>
+          </div>
+          <div class="grid2">
+            <label>Ignorer si publié depuis (min)<input name="freshMin" type="number" min="5" max="1440" step="5"></label>
+            <label>Ventes vérifiées / min<input name="checksPerMin" type="number" min="0" max="6" step="1"></label>
+          </div>
+          <label>Frais de port max acceptés (€)<input name="maxShipping" type="number" min="0" step="0.5"></label>
+          <label class="check"><input name="useTab" type="checkbox"> Recherche via un onglet Vinted réduit <small>(seulement si les résultats semblent en retard)</small></label>
           <label class="check"><input name="demo" type="checkbox"> Mode démo (données fictives)</label>
         </form>
-      </section>
+      </details>
 
-      <section class="panel">
-        <h2>Achat automatique</h2>
+      <details class="sec">
+        <summary>Achat</summary>
         <form id="abForm" class="settings">
           <label class="check"><input name="autobuy" type="checkbox"> Activer l'achat auto</label>
-          <label class="check"><input name="dryRun" type="checkbox"> Simulation (va jusqu'au paiement sans payer) — s'applique aussi au bouton ⚡</label>
-          <label class="check"><input name="requireSold" type="checkbox"> Exiger des ventes réelles (sinon : annonces similaires)</label>
+          <label class="check"><input name="dryRun" type="checkbox"> Simulation (aucun paiement) — s'applique aussi au bouton ⚡</label>
+          <label class="check"><input name="requireSold" type="checkbox"> Exiger des ventes réelles pour estimer</label>
         </form>
-        <p class="note" id="abExt">Règles par moniteur : bouton <b>⚡</b> dans la liste. Limites de sécurité (budget, nombre/jour) : popup de l'extension.</p>
+        <p class="note" id="abExt">Règles par recherche : bouton ⚡ dans la liste. Limites : popup de l'extension.</p>
         <ul id="abLog" class="ablog"></ul>
-      </section>
+      </details>
 
-      <section class="panel">
-        <h2>Base de ventes</h2>
+      <details class="sec">
+        <summary>Base de ventes</summary>
         <p class="note" id="dbInfo">–</p>
         <div class="grid2">
           <button class="btn ghost" id="dbExport" type="button">Exporter</button>
           <label class="btn ghost filebtn">Importer<input id="dbImport" type="file" accept="application/json" hidden></label>
         </div>
-        <button class="btn primary wide" id="diagExport" type="button" style="margin-top:8px">Exporter un diagnostic</button>
-      </section>
-
-      <section class="panel help" id="help">
-        <h2>Connexion</h2>
-        <p>Flipdar parle à Vinted via l'extension <b>Flipdar Bridge</b> installée dans ton navigateur, avec ta propre session Vinted.</p>
-        <ol>
-          <li><a href="flipdar-extension.zip">Télécharge l'extension</a> et dézippe-la.</li>
-          <li>Ouvre <code>chrome://extensions</code>, active le mode développeur, « Charger l'extension non empaquetée ».</li>
-          <li>Connecte-toi sur Vinted dans ce navigateur, puis recharge cette page.</li>
-        </ol>
-      </section>
+        <button class="btn ghost wide" id="diagExport" type="button">Exporter un diagnostic</button>
+      </details>
     </aside>
 
-    <main class="main">
-      <div class="toolbar">
+    <!-- ===================== Centre : le fil ===================== -->
+    <main class="feedcol">
+      <div class="feedbar">
         <div class="seg" id="view">
           <button data-v="all" class="on">Tout</button>
           <button data-v="new">Nouveaux</button>
           <button data-v="deal">Bonnes affaires</button>
         </div>
-        <select id="monFilter"><option value="">Tous les moniteurs</option></select>
-        <span class="hint"><kbd>B</kbd> acheter le dernier · <kbd>Espace</kbd> pause</span>
+        <select id="monFilter"><option value="">Toutes les recherches</option></select>
       </div>
       <div id="empty" class="empty">
-        <p><b>Aucun article pour l'instant.</b></p>
-        <p>Ajoute un moniteur à gauche. Sans extension, active le <b>mode démo</b> pour tester l'interface.</p>
+        <div class="empty-ico">✦</div>
+        <p><b>Le fil est vide pour l'instant.</b></p>
+        <p>Ajoute une recherche à droite : les nouvelles annonces apparaîtront ici, en haut, dès leur mise en ligne.</p>
       </div>
       <div id="feed" class="feed"></div>
+      <p class="hint"><kbd>B</kbd> acheter la dernière · <kbd>Espace</kbd> pause</p>
     </main>
-  </div>
 
+    <!-- ===================== Droite : recherches ===================== -->
+    <aside class="pane right" id="paneRight" aria-label="Recherches">
+      <div class="pane-h"><h2>Recherches <span id="monCount" class="pill">0</span></h2><button class="icon-btn only-narrow" data-close aria-label="Fermer">✕</button></div>
+      <ul id="monitors" class="monitors"></ul>
+
+      <details class="sec" open>
+        <summary>+ Nouvelle recherche</summary>
+        <form id="addForm" autocomplete="off">
+          <label>Lien de recherche Vinted <small>(avec tes filtres)</small>
+            <input name="url" placeholder="https://www.vinted.fr/catalog?search_text=…">
+          </label>
+          <div class="or"><span>ou</span></div>
+          <label>Mots-clés<input name="q" placeholder="ralph lauren pull"></label>
+          <div class="grid2">
+            <label>Prix min<input name="min" type="number" min="0" step="1"></label>
+            <label>Prix max<input name="max" type="number" min="0" step="1"></label>
+          </div>
+          <div class="grid2">
+            <label>Pays
+              <select name="domain">
+                <option value="vinted.fr">France</option><option value="vinted.be">Belgique</option>
+                <option value="vinted.es">Espagne</option><option value="vinted.it">Italie</option>
+                <option value="vinted.de">Allemagne</option><option value="vinted.nl">Pays-Bas</option>
+                <option value="vinted.pt">Portugal</option><option value="vinted.lu">Luxembourg</option>
+                <option value="vinted.pl">Pologne</option><option value="vinted.co.uk">Royaume-Uni</option>
+              </select>
+            </label>
+            <label>Nom<input name="name" placeholder="optionnel"></label>
+          </div>
+          <button class="btn primary wide" type="submit">Ajouter la recherche</button>
+        </form>
+      </details>
+
+      <details class="sec">
+        <summary>Tendances</summary>
+        <p class="note">Un clic = une recherche ajoutée, triée des plus récentes, avec un prix max pensé pour la revente.</p>
+        <div id="presets" class="presets"></div>
+      </details>
+    </aside>
+  </div>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ===================== Carte d'annonce ===================== -->
   <template id="cardTpl">
     <article class="card">
       <a class="thumb" target="_blank" rel="noopener"><img alt="" loading="lazy" decoding="async"><span class="age"></span><span class="badge"></span></a>
@@ -162,11 +181,11 @@
     <form method="dialog" class="dlg" id="ruleForm">
       <header><h3 id="ruleTitle">Achat auto</h3><button class="x" value="cancel" aria-label="Fermer">✕</button></header>
       <div class="dlg-body">
-        <label class="check"><input name="on" type="checkbox"> Acheter automatiquement les nouvelles annonces de ce moniteur qui respectent :</label>
-        <label>Prix article max (€) <input name="maxPrice" type="number" min="1" step="0.5" required></label>
-        <label>Profit estimé minimum (€) <input name="minProfit" type="number" step="0.5"></label>
-        <label>Remise minimum vs revente (%) <input name="minDeal" type="number" min="0" max="95" step="1"></label>
-        <p class="note">Le total réellement payé (frais + port) est revérifié sur la page de paiement avant de cliquer. L'extension applique en plus ses propres plafonds.</p>
+        <label class="check"><input name="on" type="checkbox"> Acheter automatiquement les nouvelles annonces de cette recherche qui respectent :</label>
+        <label>Prix article max (€)<input name="maxPrice" type="number" min="1" step="0.5" required></label>
+        <label>Profit estimé minimum (€)<input name="minProfit" type="number" step="0.5"></label>
+        <label>Remise minimum vs revente (%)<input name="minDeal" type="number" min="0" max="95" step="1"></label>
+        <p class="note">Le total réellement payé (frais + port) est revérifié avant de cliquer. L'extension applique en plus ses propres plafonds.</p>
         <button class="btn primary wide" value="save">Enregistrer</button>
       </div>
     </form>
@@ -181,6 +200,6 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="app.js?v=7.0"></script>
+  <script src="app.js?v=8.0"></script>
 </body>
 </html>

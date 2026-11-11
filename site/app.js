@@ -9,7 +9,7 @@ function showFatal(msg) {
 (() => {
   const want = document.querySelector('meta[name="flipdar-version"]');
   const page = want ? want.content : '';
-  if (page !== '7.0' && !sessionStorage.getItem('flipdar-reloaded')) {
+  if (page !== '8.0' && !sessionStorage.getItem('flipdar-reloaded')) {
     try { sessionStorage.setItem('flipdar-reloaded', '1'); } catch { /* rien */ }
     location.replace(location.pathname + '?r=' + Date.now());
   }
@@ -29,7 +29,7 @@ const DEFAULTS = {
   interval: 6, minGap: 2500, shipping: 3.5, maxShipping: 7, highlight: 25, checksPerMin: 2, webhook: '',
   sound: true, notify: false, demo: false, autobuy: false, dryRun: true, requireSold: false, freshMin: 120, sniper: false, useTab: false,
 };
-const APP_VERSION = '7.0';
+const APP_VERSION = '8.0';
 const EXT_MIN = '7.0.0';
 const MAX_FEED = 300;
 const MIN_SAMPLES = 8;
@@ -197,6 +197,21 @@ function itemType(title, brand) {
   // « Polo » seul (aussi dans « Polo Ralph Lauren ») : c'est un polo s'il n'y a aucun autre type.
   return words.includes('polo') ? 'polo' : '';
 }
+/* Marque : si Vinted ne la fournit pas dans les résultats, on la déduit du titre (liste des marques
+   courantes en revente) ou, à défaut, de la recherche elle-même (« burberry trench » → Burberry). */
+const KNOWN_BRANDS = ("Polo Ralph Lauren|Ralph Lauren|Lauren Ralph Lauren|Lacoste|Nike|Jordan|Adidas|Carhartt WIP|Carhartt|Stone Island|The North Face|North Face|Arc'teryx|Arcteryx|Patagonia|Burberry|Moncler|Barbour|UGG|Levi's|Levis|Stüssy|Stussy|New Balance|Salomon|Tommy Hilfiger|Tommy Jeans|Calvin Klein|Hugo Boss|Boss|Zara|H&M|Uniqlo|Supreme|Palace|Corteiz|Trapstar|Dior|Gucci|Prada|Louis Vuitton|Chanel|Hermès|Hermes|Balenciaga|Saint Laurent|Yves Saint Laurent|Celine|Loewe|Miu Miu|Jacquemus|Ami Paris|Ami|Sandro|Maje|The Kooples|Kenzo|Fred Perry|Napapijri|Timberland|Dr. Martens|Dr Martens|Converse|Vans|Asics|Puma|Reebok|Yeezy|Brunello Cucinelli|Loro Piana|Zadig & Voltaire|Zadig et Voltaire|Isabel Marant|Sézane|Sezane|Massimo Dutti|COS|Arket|Weekday|Champion|Dickies|Ellesse|Fila|Kappa|Lyle & Scott|Paul Smith|Hackett|Gant|Diesel|G-Star|Guess|Michael Kors|Longchamp|Coach|Furla|Mango|Bershka|Pull&Bear|Stradivarius|Shein|Primark|Kiabi|Jules|Celio|Petit Bateau|Jacadi|Bonpoint|Sergent Major|Okaïdi|Catimini|Canada Goose|Woolrich|Peak Performance|Columbia|Quechua|Decathlon|Hoka|On Running|Birkenstock|Veja|Clarks|Lacoste Live|Armani|Emporio Armani|Armani Exchange|Versace|Fendi|Givenchy|Valentino|Off-White|Bape|A Bathing Ape|Comme des Garçons|Maison Margiela|Acne Studios|Mulberry|Ted Baker|Superdry|Jack & Jones|Only|Vero Moda|Desigual|Benetton|Lee|Wrangler|Pepe Jeans|Abercrombie|Abercrombie & Fitch|Hollister|American Eagle|Gap|Ralph|Moschino|Max Mara|Marc Jacobs|Kate Spade|Tory Burch|Off White|Represent|Nike ACG|Oakley|Ray-Ban|Rolex|Casio|Seiko").split('|');
+const BRAND_KEYS = KNOWN_BRANDS.map((b) => [b, ' ' + norm(b).replace(/[^a-z0-9]+/g, ' ').trim() + ' ']).sort((x, y) => y[1].length - x[1].length);
+const BRAND_CANON = { 'Lauren Ralph Lauren': 'Ralph Lauren', 'Ralph': 'Ralph Lauren', 'North Face': 'The North Face', 'Arcteryx': "Arc'teryx", 'Levis': "Levi's", 'Stussy': 'Stüssy', 'Hermes': 'Hermès', 'Yves Saint Laurent': 'Saint Laurent', 'Dr Martens': 'Dr. Martens', 'Zadig et Voltaire': 'Zadig & Voltaire', 'Sezane': 'Sézane', 'Off White': 'Off-White', 'A Bathing Ape': 'Bape' };
+function findBrand(text) {
+  const t = ' ' + norm(text).replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+  for (const [b, k] of BRAND_KEYS) if (t.includes(k)) return BRAND_CANON[b] || b;
+  return '';
+}
+const brandHintOf = (f) => (f && f.params ? findBrand(new URLSearchParams(f.params).get('search_text') || '') : '');
+function inferBrands(items, hint) {
+  for (const i of items) if (!i.brand) { i.brand = findBrand(i.title) || hint || ''; if (i.brand) i.brandGuess = true; }
+}
+
 /* Caractéristiques qui font le prix : gamme de taille, matière, modèle. */
 const COLORS = new Set('noir noire black schwarz nero negro zwart blanc blanche white weiss bianco blanco wit bleu bleue blue blau blu azul blauw marine navy rouge red rot rosso rojo rood vert verte green grun verde groen gris grise grey gray grau grigio beige marron brown braun marrone rose pink rosa jaune yellow gelb giallo orange violet purple kaki khaki bordeaux camel creme cream ecru multicolore clair fonce dark light'.split(' '));
 const GENERIC = new Set('les des une pour avec sans dans sur par taille homme femme enfant fille garcon mixte neuf neuve tres bon bonne etat porte portee jamais tbe the and for with size new very good men women kids unisex de du la le en et ou un col manches manche longues courtes slim regular oversize vintage original authentique authentic bel belle beau superbe magnifique comme top lot taille vendu tag etiquette marque brand fit style coupe modele model von mit und der die das para con del della uomo donna hombre mujer herren damen heren dames sch schone mooie bello bella'.split(' '));
@@ -526,15 +541,23 @@ function soldEstimate(item, f) {
 // Annonces comparables en ligne (prix demandés, jamais issus d'une recherche filtrée par prix).
 function askEstimate(item, f) {
   let c = DB.comps(item, f);
-  // Modèle trop rare même après la recherche ciblée : on compare à la gamme (même type, matière, taille).
-  if (c.tier === 'A' && c.comps.length < MIN_ASK && Comps.done[Comps.keyOf(item, f, c.models)]) {
-    c = { ...DB.comps({ ...item, title: item.title.replace(new RegExp(c.models.join('|'), 'ig'), ' ') }, f), models: [] };
-    c.tier = 'C';
+  const searched = Comps.done[Comps.keyOf(item, f, c.models)];
+  // Pas assez de comparables précis (après la recherche ciblée) : on élargit pas à pas.
+  if (c.comps.length < MIN_ASK && (searched || c.tier !== 'A')) {
+    const plain = { ...item, title: c.models && c.models.length ? item.title.replace(new RegExp(c.models.join('|'), 'ig'), ' ') : item.title };
+    const steps = [
+      () => ({ ...DB.comps(plain, f), models: [] }),                                       // même gamme, sans le modèle
+      () => ({ ...DB.comps({ ...plain, cid: null }, f), models: [] }),                     // sans la catégorie Vinted
+      () => ({ ...DB.comps({ ...plain, cid: null }, f, { unbiased: false }), models: [], biased: true }), // + annonces vues dans tes recherches
+    ];
+    for (const step of steps) { if (c.comps.length >= MIN_ASK) break; const d = step(); if (d.comps.length > c.comps.length) c = { ...d, tier: 'C' }; }
   }
   const comps = c.comps.filter((x) => x.state !== 'sold');
   if (comps.length < MIN_ASK) return { n: comps.length, comps, tier: c.tier, desc: describe(c, item), models: c.models };
   const st = robustStats(comps.map((x) => x.p / condFactor(x.st)));
-  return { n: st.n, normal: st.med * OFFER, quick: quantile(st.sorted, 0.35) * OFFER, p25: st.p25, p75: st.p75, comps, tier: c.tier, desc: describe(c, item), models: c.models, conf: confidence(st.n, st, c.tier, false), pm: precision(st, st.n, c.tier, false) };
+  let conf = confidence(st.n, st, c.tier, false);
+  if (c.biased && conf === 'haute') conf = 'moyenne'; // annonces issues de recherches filtrées par prix : moins sûr
+  return { n: st.n, normal: st.med * OFFER, quick: quantile(st.sorted, 0.35) * OFFER, p25: st.p25, p75: st.p75, comps, tier: c.tier, desc: describe(c, item) + (c.biased ? ' (provisoire)' : ''), models: c.models, conf, biased: !!c.biased, pm: precision(st, st.n, c.biased ? 'C' : c.tier, false) };
 }
 
 function analyse(item, f) {
@@ -544,7 +567,7 @@ function analyse(item, f) {
   else {
     const ae = askEstimate(item, f);
     if (ae.normal) { est = ae; src = 'ask'; }
-    if (!est || ae.conf === 'faible') Comps.want(item, f, ae.models);
+    if (!est || ae.conf === 'faible' || ae.biased || ae.tier === 'C') Comps.want(item, f, ae.models); // estimation provisoire : on cherche mieux
   }
   if (!est) return null;
   const k = condFactor(item.status);
@@ -588,6 +611,7 @@ const Comps = {
     let res; try { res = await src.search(job.domain, p.toString()); } catch { res = { ok: false }; }
     S.stats.reqTimes.push(Date.now());
     if (!res.ok) { delete this.done[job.key]; return; }
+    inferBrands(res.items || [], findBrand(job.text));
     dateItems(res.items || []);
     for (const i of res.items || []) DB.track(i, job.f, { pf: false }); // recherche sans filtre de prix : prix représentatifs
     refreshEstimates(job.key);
@@ -672,11 +696,11 @@ async function scheduler() {
     const recent = S.stats.reqTimes.filter((t) => now - t < 60000).length;
     const calm = now > (S.calmUntil || 0);
     // Tâches de fond : comparables (estimations), horloge Vinted, suivi des ventes.
-    // Part RÉSERVÉE : 2 requêtes / min (1 toutes les 3 min en Sniper, comparables seulement), prioritaire
+    // Part RÉSERVÉE : 2 requêtes / min (1 / min en Sniper, comparables seulement), prioritaire
     // sur les recherches ; au-delà, seulement s'il reste du quota.
     S.stats.extraTimes = (S.stats.extraTimes || []).filter((t) => now - t < 60000);
     const lastExtra = S.stats.extraTimes[S.stats.extraTimes.length - 1] || 0;
-    const reserve = calm && (S.settings.demo || (S.settings.sniper ? now - lastExtra > 180000 : S.stats.extraTimes.length < 2 && now - lastExtra > 20000));
+    const reserve = calm && (S.settings.demo || (S.settings.sniper ? now - lastExtra > 60000 : S.stats.extraTimes.length < 2 && now - lastExtra > 20000));
     const spare = calm && !S.settings.sniper && recent < (S.extCap || 15) - 3;
     const perMin = Number(S.settings.checksPerMin) || 0;
     const extra = () => {
@@ -788,6 +812,7 @@ async function poll(f, src) {
   S.stats.lat.push(res.ms || ms); if (S.stats.lat.length > 30) S.stats.lat.shift();
 
   const items = res.items || [];
+  inferBrands(items, brandHintOf(f));
   dateItems(items);
   learnPrices(r, items);
   for (const i of items) DB.track(i, f);
@@ -949,7 +974,7 @@ async function refreshExt() {
 function renderAbState() {
   const st = $('#abState'), info = $('#abExt');
   const on = S.settings.autobuy;
-  st.className = 'ab-state' + (on ? (S.settings.dryRun ? ' dry' : ' on') : '');
+  st.className = 'chip ab-state' + (on ? (S.settings.dryRun ? ' dry' : ' on') : '');
   st.querySelector('b').textContent = on ? (S.settings.dryRun ? 'SIMULATION' : 'ON') : 'OFF';
   const e = S.ext;
   let msg = 'Règles par moniteur : bouton ⚡ dans la liste.';
@@ -1001,6 +1026,7 @@ function addItem(item, f, isNew) {
   paintEst(rec);
   S.items.set(item.id, rec);
   feed.prepend(c);
+  if (isNew) c.addEventListener('animationend', () => c.classList.remove('fresh'), { once: true });
   paintAge(c.querySelector('.age'));
   while (S.items.size > MAX_FEED) { const [oldId, old] = S.items.entries().next().value; old.el.remove(); S.items.delete(oldId); }
   $('#empty').hidden = true;
@@ -1120,7 +1146,9 @@ async function deepEstimate(id) {
   const rule = a ? (a.desc || '') : (ae.desc || '');
   body.append(el('p', 'note', a
     ? `${a.src === 'sold' ? `${a.n} ventes réelles` : `${a.n} annonces en ligne`} comparables : ${rule}. ${a.tier === 'A' ? 'Même modèle. ' : a.tier === 'C' ? 'Matière ou modèle non identiques : estimation plus large. ' : ''}`
-    : `Pas assez de comparables pour « ${rule} » (${ae.n}). Ouvre quelques annonces similaires sur Vinted ou réessaie plus tard.`));
+    : !item.brand
+      ? 'Marque inconnue (ni dans les données Vinted, ni dans le titre, ni dans ta recherche) : impossible de trouver des articles comparables. Ajoute la marque dans les mots-clés de ta recherche.'
+      : `Pas encore assez d'articles comparables pour « ${rule} » (${ae.n} trouvés, il en faut ${MIN_ASK}). La recherche ciblée vient d'être faite : la base s'enrichit à chaque recherche, réessaie dans quelques minutes.`));
 
   // Comparables utilisés (photo, prix ramené à l'état de ton article, lien).
   const list = (se.normal ? se.comps : ae.comps).slice(0, 12);
@@ -1195,7 +1223,7 @@ function renderMonitors() {
   }
   $('#monCount').textContent = S.filters.length;
   const sel = $('#monFilter'), cur = sel.value;
-  sel.replaceChildren(new Option('Tous les moniteurs', ''), ...S.filters.map((f) => new Option(f.name, f.id)));
+  sel.replaceChildren(new Option('Toutes les recherches', ''), ...S.filters.map((f) => new Option(f.name, f.id)));
   sel.value = S.filters.some((f) => f.id === cur) ? cur : '';
 }
 
@@ -1450,6 +1478,15 @@ function renderCooldown() {
   else if (!S.leader) { lbl.textContent = 'En attente (autre onglet actif)'; $('#dot').className = 'dot demo'; }
   else if (S.bridge) { if (S.cooldown) S.cooldown = 0; lbl.textContent = 'Connecté'; $('#dot').className = 'dot on'; }
 }
+
+/* Tiroirs (paramètres / recherches) sur les écrans étroits */
+const closeDrawers = () => { document.querySelectorAll('.pane.open').forEach((p) => p.classList.remove('open')); document.body.classList.remove('drawer'); };
+document.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
+  closeDrawers(); const p = document.getElementById(b.dataset.open); if (p) { p.classList.add('open'); document.body.classList.add('drawer'); }
+}));
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeDrawers));
+on('#scrim', 'click', closeDrawers);
+addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawers(); });
 
 /* ================================================================== Démarrage */
 (async () => {

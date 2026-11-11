@@ -15,6 +15,7 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
   await p.goto('http://localhost:8766/');
   await p.evaluate(() => { localStorage.clear(); indexedDB.deleteDatabase('flipdar'); });
   await p.reload(); await p.waitForTimeout(1500);
+  await p.evaluate(() => document.querySelectorAll('details.sec').forEach((d) => { d.open = true; })); // sections repliées
 
   console.log('1. Recherche');
   assert(/Connecté/.test(await p.textContent('#srcLabel')), 'extension connectée');
