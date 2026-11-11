@@ -7,7 +7,29 @@ const os = require('os');
 
 const EXT = path.resolve(__dirname, '../extension');
 
+// Sert le dossier site/ sur http://localhost:8766 (si rien n'y répond déjà).
+let siteServer = null;
+function startSite() {
+  if (siteServer) return Promise.resolve();
+  const http = require('http');
+  const root = path.resolve(__dirname, '../site');
+  const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.zip': 'application/zip' };
+  return new Promise((resolve) => {
+    siteServer = http.createServer((req, res) => {
+      const u = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+      const f = path.join(root, u === '/' ? 'index.html' : u);
+      if (!f.startsWith(root) || !fs.existsSync(f)) { res.writeHead(404); return res.end('404'); }
+      res.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' });
+      fs.createReadStream(f).pipe(res);
+    });
+    siteServer.on('error', () => { siteServer = null; resolve(); }); // port déjà utilisé : un serveur tourne déjà
+    siteServer.listen(8766, resolve);
+    siteServer.unref();
+  });
+}
+
 async function launch({ headless = true } = {}) {
+  await startSite();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flipdar-e2e-'));
   const ctx = await chromium.launchPersistentContext(dir, {
     headless, channel: 'chromium', viewport: { width: 1400, height: 900 },

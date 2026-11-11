@@ -9,7 +9,13 @@
     if (!m || typeof m !== 'object') return;
     if (m.type === 'wfetch') {
       // Requête de recherche depuis la page Vinted (même origine que le site).
-      const headers = m.rsc ? { RSC: '1' } : { accept: 'text/html,application/xhtml+xml,*/*' };
+      let headers = m.rsc ? { RSC: '1' } : { accept: 'text/html,application/xhtml+xml,*/*' };
+      if (m.json) {
+        // Appel d'API comme le fait le site Vinted depuis ses pages (avec le jeton CSRF s'il existe).
+        headers = { accept: 'application/json, text/plain, */*' };
+        const csrf = document.querySelector('meta[name="csrf-token"]');
+        if (csrf && csrf.content) headers['x-csrf-token'] = csrf.content;
+      }
       fetch(m.url, { headers, credentials: 'include', cache: 'no-store' })
         .then(async (r) => send({ ok: r.ok, status: r.status, ct: r.headers.get('content-type') || '', url: r.url, retryAfter: Number(r.headers.get('retry-after')) || 0, text: await r.text() }))
         .catch((e) => send({ ok: false, status: 0, error: String((e && e.message) || e) }));

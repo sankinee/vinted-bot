@@ -69,7 +69,9 @@ const assert = (c, m) => { if (!c) throw new Error('ÉCHEC : ' + m); console.log
 
   {
     const st = await mockState(), now = Date.now();
-    const perMin = []; for (let m = 1; m <= 5; m++) perMin.push(st.requests.filter((r) => r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && !r.path.startsWith('/__img') && !/^\/(items|checkout)/.test(r.path) || (r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && r.rsc && r.path.startsWith('/items'))).length);
+    // Requêtes envoyées par Flipdar (hors pages ouvertes pour les achats : article, paiement, et ce qu'elles chargent).
+    const mine = (r) => !r.path.startsWith('/__img') && !/^\/(checkout|favicon\.ico|robots\.txt|api\/v2\/wardrobe)/.test(r.path) && !(r.path.startsWith('/items') && r.dest === 'document');
+    const perMin = []; for (let m = 1; m <= 5; m++) perMin.push(st.requests.filter((r) => r.t > now - m * 60000 && r.t <= now - (m - 1) * 60000 && mine(r)).length);
     assert(Math.max(...perMin) <= 16, `requêtes Vinted par minute (5 dernières min) : ${perMin.join(', ')} (plafond 15)`);
   }
   console.log('6. Mode Sniper : délai entre apparition dans la recherche Vinted et affichage');

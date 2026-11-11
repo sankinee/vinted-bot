@@ -15,8 +15,9 @@ GitHub Pages (site/)  ⇄  extension « Flipdar Bridge » (extension/)  ⇄  ong
 ```
 
 - Le site ne peut pas appeler Vinted directement : l'extension sert de pont, avec **ta** session Vinted et **ton** adresse internet.
-- **Moteur de recherche v5** : l'extension garde un onglet Vinted dans une fenêtre réduite. Les recherches partent de cette page, exactement comme celles du site Vinted (même origine, mêmes cookies). Ne ferme pas cette fenêtre (elle se recrée sinon).
-- **Vérification automatique** : au début, toutes les 10 min, et dès 2 min sans nouvelle annonce, l'onglet recharge la vraie page de résultats (comme un F5) et la compare à la recherche rapide. Si Vinted montre des annonces que Flipdar n'a pas, Flipdar passe en mode **page réelle**. Sous chaque recherche : « ✓ identique à Vinted » ou « ⚠ … mode page réelle ».
+- **Moteur de recherche** : l'extension garde un onglet Vinted dans une fenêtre réduite, posé sur une page sans application (robots.txt) : aucun trafic en arrière-plan. Les recherches partent de cet onglet, avec ta session, comme celles du site Vinted. Ne ferme pas cette fenêtre (elle se recrée sinon).
+- **API** : depuis cet onglet, Flipdar teste les adresses d'API de recherche (une fois, puis toutes les 6 h). Si l'une renvoie vraiment ta recherche, triée du plus récent, il l'utilise (« ⚡ via API », plus léger). Sinon il lit la page de résultats (« via onglet Vinted »).
+- **Vérification automatique** : au début, toutes les 10 min et dès 2 min sans nouvelle annonce, une requête de la page de résultats (comme un F5, sans la charger) est comparée à la recherche. En cas d'écart, Flipdar bascule sur la page de résultats. Sous chaque recherche : « ✓ identique à Vinted » ou « ⚠ … ».
 - Limiteur anti-blocage : 15 requêtes/min au maximum (plafond qui baisse après un blocage), pause automatique si Vinted répond « rate limited ».
 
 ## Mise en ligne

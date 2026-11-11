@@ -125,7 +125,7 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     if (u.pathname === '/__mock/ages') { const out = {}; for (const id of (u.searchParams.get('ids') || '').split(',')) { const it = items.get(Number(id)); if (it) out[id] = +((Date.now() - it.createdAt + ADDED_OFFSET) / 60000).toFixed(1); } return send(res, 200, 'application/json', JSON.stringify(out)); }
     if (u.pathname === '/__mock/item') { const it = [...items.values()].find((i) => !i.sold && i.createdAt < Date.now() - 60000 && i.brand === (u.searchParams.get('brand') || 'Ralph Lauren')); return send(res, 200, 'application/json', JSON.stringify(it)); }
   }
-  STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1', site: req.headers['sec-fetch-site'] || '' });
+  STATE.requests.push({ t: Date.now(), host, path: u.pathname, rsc: req.headers.rsc === '1', site: req.headers['sec-fetch-site'] || '', dest: req.headers['sec-fetch-dest'] || '' });
   if (u.pathname.startsWith('/__img/')) return send(res, 200, 'image/svg+xml', svg(parseInt((u.pathname.match(/\d{6,}/) || ['0'])[0], 10)));
   if (STATE.rateLimited) return send(res, 429, 'text/html', '<h1>You are rate limited</h1><p>access to this site is blocked for this computer, due to too many requests.</p>');
 
@@ -138,6 +138,11 @@ https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (
     return send(res, 404, 'application/json', '{"code":404}');
   }
   if (u.pathname === '/') return send(res, 200, 'text/html', '<html><body>Vinted</body></html>', { 'set-cookie': 'access_token_web=mock; Path=/; Secure; SameSite=Lax' });
+  if (u.pathname === '/robots.txt') return send(res, 200, 'text/plain', 'User-agent: *\nDisallow: /api/\n');
+  // Hypothèse : l'API de recherche ne répond qu'aux appels faits depuis une page Vinted (même origine, JSON).
+  if (u.pathname === '/api/v2/catalog/items' && process.env.MOCK_TAB_API === '1' && req.headers['sec-fetch-site'] === 'same-origin' && /json/.test(req.headers.accept || '')) {
+    return send(res, 200, 'application/json', JSON.stringify({ items: searchItems(u.searchParams).map((i) => apiItem(i, host)) }));
+  }
   if (u.pathname === '/api/v2/catalog/items' || u.pathname.startsWith('/api/v2/items/')) return send(res, 404, 'text/html', '<html><body>La page n\'existe pas</body></html>');
   if (u.pathname.startsWith('/api/v2/wardrobe/')) {
     const list = [...items.values()].filter((i) => i.brand === 'Zara').slice(0, 20).map((i) => apiItem(i, host));

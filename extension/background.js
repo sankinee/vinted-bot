@@ -275,6 +275,11 @@ const saveWK = () => chrome.storage.session.set({ wk: { tabId: WK.tabId, winId: 
 function setReady() { WK.ready = true; const w = WK.waiters; WK.waiters = []; w.forEach((f) => f(true)); }
 const waitReady = (ms) => (WK.ready ? Promise.resolve(true) : new Promise((res) => { WK.waiters.push(res); setTimeout(() => res(WK.ready), ms); }));
 
+// Page d'accueil de l'onglet moteur : un simple fichier texte de Vinted (robots.txt). Aucune
+// application Vinted ne s'y exécute, donc aucun trafic en arrière-plan ; mais les requêtes partent
+// bien de vinted.fr, avec ta session.
+const workerHome = (domain) => `https://www.${domain}/robots.txt`;
+
 async function ensureWorker(domain) {
   await wkReady;
   if (Date.now() < WK.offUntil) return false;
@@ -291,11 +296,11 @@ async function ensureWorker(domain) {
   // Nouvelle fenêtre Vinted réduite, hors de ta vue.
   WK.ready = false; WK.domain = domain;
   try {
-    const win = await chrome.windows.create({ url: `https://www.${domain}/catalog?order=newest_first`, state: 'minimized', focused: false });
+    const win = await chrome.windows.create({ url: workerHome(domain), state: 'minimized', focused: false });
     WK.winId = win.id; WK.tabId = win.tabs[0].id;
     chrome.tabs.update(WK.tabId, { muted: true, autoDiscardable: false }).catch(() => {});
   } catch {
-    const tab = await chrome.tabs.create({ url: `https://www.${domain}/catalog?order=newest_first`, active: false, pinned: true });
+    const tab = await chrome.tabs.create({ url: workerHome(domain), active: false, pinned: true });
     WK.winId = null; WK.tabId = tab.id;
     chrome.tabs.update(WK.tabId, { muted: true, autoDiscardable: false }).catch(() => {});
   }
@@ -329,20 +334,41 @@ async function workerFetch(url, rsc) {
   const corpus = isRsc ? r.text : pageCorpus(r.text);
   return { ok: true, status: r.status, rsc: isRsc, corpus, items: extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id) };
 }
-// Vraie page chargée dans l'onglet (comme un F5) : référence de ce que Vinted affiche.
-async function workerNav(url) {
+// Appel d'API depuis l'onglet Vinted.
+async function workerJson(url) {
   if (!(await gate())) return { ok: false, status: 429, retryAfter: Math.ceil(cooldownLeft() / 1000) };
-  RL.times.push(Date.now(), Date.now()); // une page complète déclenche d'autres requêtes : elle compte triple
-  WK.lastNavAt = Date.now();
-  WK.ready = false;
-  const asked = await sendWorker({ type: 'wnav', url }, 3000);
-  if (!asked) await chrome.tabs.update(WK.tabId, { url }).catch(() => {}); // onglet muet : rechargement direct
-  if (!(await waitReady(25000))) return null;
-  const snap = await sendWorker({ type: 'wsnapshot' }, 10000);
-  if (!snap || !snap.html) return null;
-  const blocked = checkBlocked(200, snap.html); if (blocked) return blocked;
-  const corpus = pageCorpus(snap.html);
-  return { ok: true, status: 200, rsc: false, nav: true, corpus, items: extractObjects(corpus, looksLikeItem).sort((a, b) => b.id - a.id) };
+  const r = await sendWorker({ type: 'wfetch', url, json: true });
+  if (!r) { WK.ready = false; return null; }
+  const blocked = checkBlocked(r.status, /json/.test(r.ct) ? '' : r.text); if (blocked) return blocked;
+  if (!r.ok) return { ok: false, status: r.status };
+  if (!/json/.test(r.ct)) return { ok: false, status: 415 };
+  try { return { ok: true, status: r.status, data: JSON.parse(r.text) }; } catch { return { ok: false, status: 415 }; }
+}
+
+// Cherche, depuis l'onglet, une adresse d'API qui renvoie vraiment la recherche (au plus toutes les 6 h).
+const TAB_API_CANDIDATES = [
+  'https://www.{d}/api/v2/catalog/items',
+  'https://api.{d}/api/v2/catalog/items',
+  'https://api.{d}/catalog/v2/items',
+  'https://api.{d}/catalog/items',
+];
+const deadTab = new Set();
+async function discoverTabApi(domain) {
+  if (EP.tabApi || Date.now() - (EP.lastTabDiscover || 0) < 6 * 3600000) return;
+  EP.lastTabDiscover = Date.now(); saveEP();
+  for (const tpl of [...EP.cand, ...TAB_API_CANDIDATES]) {
+    if (deadTab.has(tpl)) continue;
+    let ok = true;
+    for (const probe of ['nike', 'zara']) {
+      const q = `search_text=${probe}&order=newest_first&per_page=24&page=1`;
+      const j = await workerJson(searchUrl(tpl, domain, q));
+      if (!j) return;
+      if (j.status === 429 || j.captcha) return;
+      if (!(j.ok && fitsQuery(j.data && j.data.items, q, true))) { ok = false; break; }
+    }
+    if (ok) { EP.tabApi = tpl; saveEP(); return; }
+    deadTab.add(tpl);
+  }
 }
 
 async function workerSearch(domain, query) {
@@ -350,6 +376,7 @@ async function workerSearch(domain, query) {
   while (WK.busy) await WK.busy; // une seule opération à la fois dans l'onglet
   let release; WK.busy = new Promise((r) => (release = r));
   try {
+    await discoverTabApi(domain); // une fois, puis toutes les 6 h (quelques requêtes légères)
     const p = new URLSearchParams(query);
     for (const v of p.getAll('catalog_ids[]')) p.append('catalog[]', v);
     p.delete('per_page');
@@ -357,40 +384,52 @@ async function workerSearch(domain, query) {
     p.set('time', String(Math.floor(Date.now() / 1000)));
     const url = `https://www.${domain}/catalog?${p}`;
     const t0 = Date.now();
-    if (WK.mode === 'nav' && Date.now() > WK.modeUntil) WK.mode = 'fetch';
+    if (WK.mode === 'html' && Date.now() > WK.modeUntil) WK.mode = 'fetch';
     const fr = FRESH.get(qKey);
     const qs = QSTATE.get(qKey) || { maxId: 0, lastNewAt: Date.now() };
-    // Vérifie sur la vraie page : au début, puis toutes les 10 min ; et dès 2 min sans aucune
-    // nouvelle annonce (une recherche figée se voit à ça).
+    // Vérification (1 requête légère) : au début, toutes les 10 min, et dès 2 min sans nouvelle
+    // annonce ; au plus une par minute, toutes recherches confondues.
     const quiet = Date.now() - qs.lastNewAt > 2 * 60000;
-    // … et au plus une vérification par minute, toutes recherches confondues (elles sont lentes).
-    const verifyDue = (!fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000)) && Date.now() - (WK.lastNavAt || 0) > 60000;
+    const verifyDue = (!fr || Date.now() - fr.at > (!fr.ok ? 5 * 60000 : quiet ? 2 * 60000 : 10 * 60000)) && Date.now() - (WK.lastVerifyAt || 0) > 60000;
 
-    let res;
-    if (WK.mode === 'nav' && !verifyDue) res = await workerNav(url);
-    else {
-      res = await workerFetch(url, rscOn());
+    let res = null, via = '';
+    // 1) API validée, appelée depuis l'onglet Vinted (la plus légère et la plus rapide).
+    if (EP.tabApi) {
+      const q = new URLSearchParams(query); q.set('per_page', '96'); q.set('page', '1');
+      const j = await workerJson(searchUrl(EP.tabApi, domain, q.toString()));
+      if (j && (j.status === 429 || j.captcha)) return j;
+      if (j && j.ok && fitsQuery(j.data && j.data.items, query)) { res = { ok: true, status: 200, items: [...j.data.items].sort((a, b) => b.id - a.id) }; via = 'tab-api'; }
+      else if (j) { deadTab.add(EP.tabApi); EP.tabApi = null; saveEP(); }
+    }
+    // 2) Sinon, la page de résultats (flux rapide, ou page HTML si le flux est en retard).
+    if (!res) {
+      res = await workerFetch(url, WK.mode === 'html' ? false : rscOn());
       if (res && res.ok && !res.items.length && res.rsc) { const c = await workerFetch(url, false); if (c && c.ok && c.items.length) res = c; }
-      if (res && res.ok && verifyDue) {
-        // Vérification : la vraie page montre-t-elle des annonces plus récentes ?
-        const maxA = res.items.reduce((m, i) => Math.max(m, i.id), 0);
-        const nav = await workerNav(url);
-        if (nav && nav.ok) {
-          const newer = nav.items.filter((i) => i.id > maxA).length;
-          const stale = newer >= 2 || (newer >= 1 && !res.items.length);
-          FRESH.set(qKey, { at: Date.now(), ok: !stale, newer });
-          if (stale) { WK.mode = 'nav'; WK.modeUntil = Date.now() + 30 * 60000; res = nav; }
-          else if (WK.mode === 'nav') WK.mode = 'fetch';
-        }
-      }
+      via = res && res.rsc ? 'tab-rsc' : 'tab-page';
     }
     if (!res) return null;
     if (!res.ok) return res;
+    // 3) Vérification : la page de résultats (comme un F5) montre-t-elle des annonces plus récentes ?
+    if (verifyDue) {
+      WK.lastVerifyAt = Date.now();
+      const maxA = res.items.reduce((m, i) => Math.max(m, i.id), 0);
+      const ref = await workerFetch(url, false);
+      if (ref && ref.ok) {
+        const newer = ref.items.filter((i) => i.id > maxA).length;
+        const stale = newer >= 2 || (newer >= 1 && !res.items.length);
+        FRESH.set(qKey, { at: Date.now(), ok: !stale, newer });
+        if (stale) {
+          if (via === 'tab-api') { deadTab.add(EP.tabApi); EP.tabApi = null; saveEP(); }
+          else { WK.mode = 'html'; WK.modeUntil = Date.now() + 30 * 60000; }
+          res = ref; via = 'tab-page';
+        } else if (WK.mode === 'html' && via === 'tab-page') WK.mode = 'fetch';
+      }
+    }
     const top = res.items.reduce((m, i) => Math.max(m, i.id), 0);
     if (top > qs.maxId) { if (qs.maxId) qs.lastNewAt = Date.now(); qs.maxId = top; }
     QSTATE.set(qKey, qs);
     const f = FRESH.get(qKey);
-    return { ok: true, status: res.status, ms: Date.now() - t0, data: { items: res.items }, via: res.nav ? 'nav' : res.rsc ? 'tab-rsc' : 'tab-page', fresh: f ? { ok: f.ok, at: f.at, newer: f.newer, mode: WK.mode } : null };
+    return { ok: true, status: res.status, ms: Date.now() - t0, data: { items: res.items }, via, fresh: f ? { ok: f.ok, at: f.at, newer: f.newer, mode: WK.mode } : null };
   } finally { WK.busy = null; release(); }
 }
 
@@ -428,9 +467,9 @@ async function search(domain, query) {
     // L'adresse ne respecte plus la recherche (ou a disparu) : on l'oublie et on lit la page.
     dead.add(EP.search); saveDead(); EP.search = null; saveEP(); syncLearner();
   }
-  maybeDiscover(domain); // non bloquant
   const w = await workerSearch(domain, query).catch(() => null);
   if (w) return w;
+  maybeDiscover(domain); // repli sans onglet : recherche d'API depuis l'extension (non bloquant)
   return searchHtml(domain, query); // repli : requête directe de l'extension
 }
 
@@ -738,7 +777,7 @@ function onCheckoutMessage(msg, sender, send) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== 'object') return { ok: false, status: 0, error: 'bad message' };
   const origin = sender.url ? new URL(sender.url).origin : '';
-  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rscOffUntil, rscFails, worker: { tabId: WK.tabId, ready: WK.ready, mode: WK.mode, fails: WK.fails, offUntil: WK.offUntil }, fresh: [...FRESH.entries()], rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, lastRaw };
+  if (msg.type === 'debug') return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, dead: [...dead], survey, rscOffUntil, rscFails, worker: { tabId: WK.tabId, ready: WK.ready, mode: WK.mode, fails: WK.fails, offUntil: WK.offUntil, tabApi: EP.tabApi || null, deadTab: [...deadTab] }, fresh: [...FRESH.entries()], rl: { until: RL.until, strikes: RL.strikes, cap: capNow(), perMin: RL.times.length }, lastRaw };
   if (msg.type === 'version') { await epReady; return { ok: true, version: chrome.runtime.getManifest().version, endpoints: EP, cooldown: cooldownLeft(), cap: capNow(), perMin: RL.times.filter((t) => Date.now() - t < 60000).length, captcha: RL.captchaAt && Date.now() - RL.captchaAt < 10 * 60000 }; }
   if (msg.type === 'abConfig') {
     const c = await abConfig();
